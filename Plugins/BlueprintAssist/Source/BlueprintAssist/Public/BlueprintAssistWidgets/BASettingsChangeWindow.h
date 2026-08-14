@@ -9,11 +9,20 @@
 #include "Widgets/SCompoundWidget.h"
 #include "Widgets/Views/SListView.h"
 #include "Widgets/Views/STableRow.h"
+#include "BASettingsChangeWindow.generated.h"
 
 
 class FUICommandInfo;
 class SCheckBox;
 class SDockTab;
+
+UENUM()
+enum class EBASettingsLocation : uint8
+{
+	PROJECT UMETA(DisplayName = "Project"),
+	ENGINE UMETA(DisplayName = "Engine"),
+	GLOBAL UMETA(DisplayName = "Global")
+};
 
 class FBASettingChangeData : public TSharedFromThis<FBASettingChangeData>
 {
@@ -85,6 +94,7 @@ class BLUEPRINTASSIST_API SBASettingsChangeWindow : public SCompoundWidget
 	static TSharedRef<SDockTab> CreateTab(const FSpawnTabArgs& Args);
 
 	TSharedRef<SWidget> MakeSettingMenuButton(UBASettingsBase* SettingsObj);
+	TSharedRef<SWidget> MakeSaveButton(EBASettingsLocation Location);
 
 	TSharedPtr<SWidgetSwitcher> WidgetSwitcher;
 	TSharedPtr<SBASettingsListView> SettingsList;
@@ -93,4 +103,8 @@ class BLUEPRINTASSIST_API SBASettingsChangeWindow : public SCompoundWidget
 	UBASettingsBase* ActiveSetting;
 
 	void SetActiveSettings(UBASettingsBase* Settings);
+
+	void SaveSettings(EBASettingsLocation Location);
+
+	FString GetIniPath(EBASettingsLocation Location);
 };

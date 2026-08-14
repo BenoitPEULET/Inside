@@ -19,6 +19,13 @@ enum class EBACacheSaveLocation : uint8
 	Project UMETA(DisplayName = "Project", Tooltip = "Save to ProjectFolder/Saved/BlueprintAssist/BlueprintAssistCache.json"),
 };
 
+UENUM()
+enum class EBACrashReportingMethod : uint8
+{
+	Ask UMETA(DisplayName = "Ask", Tooltip = "Always ask when finding unsent crash reports"),
+	Never UMETA(DisplayName = "Never send", Tooltip = "Don't check for crash reports"),
+	// Always UMETA(DisplayName = "Always send", Tooltip = "Don't ask and send new crash reports"),
+};
 
 UCLASS(config = EditorPerProjectUserSettings)
 class BLUEPRINTASSIST_API UBASettings_Advanced final : public UBASettingsBase
@@ -49,10 +56,6 @@ public:
 
 	UPROPERTY(EditAnywhere, config, Category = "Commands")
 	TSet<FName> DisabledCommands;
-
-	/* Potential issue where pins can get stuck in a hovered state on the material graph */
-	UPROPERTY(EditAnywhere, config, Category = "Material Graph|Experimental")
-	bool bEnableMaterialGraphPinHoverFix;
 
 	/* Fix for issue where copy-pasting material nodes will result in their material expressions having the same GUID */
 	UPROPERTY(EditAnywhere, config, Category = "Material Graph|Experimental", DisplayName="Generate Unique GUID For Material Expressions")
@@ -85,6 +88,22 @@ public:
 	/** Draw a red border around bad comment nodes after formatting */
 	UPROPERTY(EditAnywhere, config, Category = "Misc")
 	bool bHighlightBadComments;
+
+	/** Determines what to do with Blueprint Assist crash reports when launching the editor */
+	UPROPERTY(EditAnywhere, config, Category = "Crash Reporter")
+	EBACrashReportingMethod CrashReportingMethod = EBACrashReportingMethod::Ask;
+
+	/** When crashing during formatting, the related nodes will be written to Saved/Crashes/BACrashData */
+	UPROPERTY(EditAnywhere, config, Category = "Crash Reporter")
+	bool bDumpFormattingCrashNodes;
+
+	/** Include a copy of the node graph used when you crashed while formatting */
+	UPROPERTY(config)
+	bool bIncludeNodesInCrashReport;
+
+	/** Include your Blueprint Assist formatting settings */
+	UPROPERTY(config)
+	bool bIncludeSettingsInCrashReport;
 
 	static FORCEINLINE bool HasDebugSetting(const FString& Setting)
 	{

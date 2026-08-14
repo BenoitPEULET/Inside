@@ -22,7 +22,7 @@ DEFINE_LOG_CATEGORY(LogAutoSizeComments)
 void FAutoSizeCommentsModule::StartupModule()
 {
 #if ASC_ENABLED
-	FCoreDelegates::OnPostEngineInit.AddRaw(this, &FAutoSizeCommentsModule::OnPostEngineInit);
+	FCoreDelegates::GetOnPostEngineInit().AddRaw(this, &FAutoSizeCommentsModule::OnPostEngineInit);
 #endif
 }
 
@@ -66,7 +66,7 @@ void FAutoSizeCommentsModule::ShutdownModule()
 #if ASC_ENABLED
 	UE_LOG(LogAutoSizeComments, Log, TEXT("Shutdown AutoSizeComments"));
 
-	FCoreDelegates::OnPostEngineInit.RemoveAll(this);
+	FCoreDelegates::GetOnPostEngineInit().RemoveAll(this);
 
 	// Remove custom settings
 	if (ISettingsModule* SettingsModule = FModuleManager::GetModulePtr<ISettingsModule>("Settings"))
@@ -86,7 +86,7 @@ void FAutoSizeCommentsModule::ShutdownModule()
 		ASCNodeFactory.Reset();
 	}
 
-	FCoreDelegates::OnPostEngineInit.RemoveAll(this);
+	FCoreDelegates::GetOnPostEngineInit().RemoveAll(this);
 
 	FAutoSizeCommentGraphHandler::Get().UnbindDelegates();
 

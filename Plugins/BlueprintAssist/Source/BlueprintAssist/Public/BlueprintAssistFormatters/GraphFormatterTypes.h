@@ -123,6 +123,8 @@ struct BLUEPRINTASSIST_API FPinLink
 	FPinLink MakeOppositeLink() const { return FPinLink(To, From); }
 
 	bool IsLinked(bool bDirectional = true);
+
+	bool HasBothGraphPins(TSharedPtr<SGraphPanel> GraphPanel) const; 
 };
 
 
@@ -237,10 +239,10 @@ struct BLUEPRINTASSIST_API FNodeRelativeMapping
 // Check if the graph formatter has broken connections
 struct BLUEPRINTASSIST_API FFormatterConnectionValidator
 {
-	TMap<UEdGraphNode*, TSet<FPinLink>> Connections;
+	TMap<FGuid, TSet<FPinLink>> Connections;
 
 	void Reset() { Connections.Reset(); }
 	void CreateSnapshot(const TArray<UEdGraphNode*>& Nodes) { Connections = BuildConnections(Nodes); }
-	TMap<UEdGraphNode*, TSet<FPinLink>> BuildConnections(const TArray<UEdGraphNode*>& Nodes);
-	bool CheckChanged(const TArray<UEdGraphNode*>& Nodes);
+	TMap<FGuid, TSet<FPinLink>> BuildConnections(const TArray<UEdGraphNode*>& Nodes);
+	bool CheckChanged(UEdGraph* Graph);
 };

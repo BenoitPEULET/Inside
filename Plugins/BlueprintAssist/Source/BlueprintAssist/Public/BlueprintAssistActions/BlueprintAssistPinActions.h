@@ -12,6 +12,8 @@ public:
 	bool HasEditablePin() const;
 	bool HasHoveredPin() const;
 	bool HasHoveredOrSelectedPin() const;
+	bool HasHoveredPinLink() const;
+	UEdGraphPin* GetHoveredOrSelectedPin(TSharedPtr<FBAGraphHandler> GraphHandler);
 };
 
 class BLUEPRINTASSIST_API FBAPinActions final : public FBAPinActionsBase
@@ -34,4 +36,5 @@ public:
 	void DisconnectPinOrWire();
 	void SplitPin();
 	void RecombinePin();
+	void StraightenHoveredPin();
 };

@@ -17,6 +17,10 @@
 #include "K2Node_CallParentFunction.h"
 #include "K2Node_ComponentBoundEvent.h"
 #include "K2Node_CustomEvent.h"
+#include "K2Node_FunctionEntry.h"
+#include "K2Node_FunctionResult.h"
+#include "K2Node_InputKey.h"
+#include "K2Node_Tunnel.h"
 #include "K2Node_VariableGet.h"
 #include "SCommentBubble.h"
 #include "ScopedTransaction.h"
@@ -32,8 +36,11 @@
 #include "Editor/BlueprintGraph/Classes/K2Node_Knot.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/Notifications/NotificationManager.h"
+#include "GenericPlatform/GenericPlatformCrashContext.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "MaterialGraph/MaterialGraphNode.h"
+#include "Misc/FileHelper.h"
+#include "BlueprintAssistMisc/BACrashReporter.h"
 #include "UObject/SavePackage.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "Widgets/Notifications/SNotificationList.h"
@@ -119,7 +126,7 @@ void FBAGraphHandler::InitGraphHandler()
 
 	GetGraphData().CleanupGraph(GetFocusedEdGraph());
 
-	GetGraphEditor()->GetViewLocation(LastGraphView, LastZoom);
+	GetViewLocation(LastGraphView, LastZoom);
 
 	if (OnGraphChangedHandle.IsValid())
 	{
@@ -339,18 +346,25 @@ bool FBAGraphHandler::LinkExecWhenCreatedFromParameter(UEdGraphNode* NodeCreated
 				if (FBAUtils::IsNodeImpure(OtherLinkedNode))
 				{
 					TArray<UEdGraphPin*> ExecPins = FBAUtils::GetExecPins(NodeCreated, MyLinkedPin->Direction);
+					if (ExecPins.Num() == 0)
+					{
+						return false;
+					}
+
+					FBANodePinHandle FirstPin(ExecPins[0]);
+
 					const int NumLinkedExecPins = ExecPins.FilterByPredicate(FBAUtils::IsPinLinked).Num();
 
 					if (NumLinkedExecPins == 0)
 					{
-						TArray<FBANodePinHandle> ExecPinHandles = FBANodePinHandle::ConvertArray(ExecPins);
-
 						TArray<UEdGraphPin*> OtherExecPins = FBAUtils::GetExecPins(OtherLinkedNode, UEdGraphPin::GetComplementaryDirection(MyLinkedPin->Direction));
 						if (OtherExecPins.Num() > 0)
 						{
 							FBANodePinHandle OtherExecPin = OtherExecPins[0];
 							if (OtherExecPin->LinkedTo.Num() > 0)
 							{
+								UEdGraphPin* FirstLinkedTo = OtherExecPin->LinkedTo[0];
+
 								// if we aren't inserting and the exec pin has links, then don't do anything
 								if (!bInsert)
 								{
@@ -360,11 +374,11 @@ bool FBAGraphHandler::LinkExecWhenCreatedFromParameter(UEdGraphNode* NodeCreated
 								TArray<UEdGraphPin*> MyPinsInDirection = FBAUtils::GetExecPins(NodeCreated, OtherExecPin->Direction);
 								if (MyPinsInDirection.Num() > 0)
 								{
-									FBAUtils::TryCreateConnectionUnsafe(OtherExecPin->LinkedTo[0], MyPinsInDirection[0], EBABreakMethod::Always);
+									FBAUtils::TryCreateConnectionUnsafe(FirstLinkedTo, MyPinsInDirection[0], EBABreakMethod::Always);
 								}
 							}
 
-							FBAUtils::TryCreateConnection(ExecPinHandles[0], OtherExecPin, EBABreakMethod::Always);
+							FBAUtils::TryCreateConnection(FirstPin, OtherExecPin, EBABreakMethod::Always);
 							return true;
 						}
 					}
@@ -466,7 +480,7 @@ void FBAGraphHandler::Tick(float DeltaTime)
 				bInitialZoomFinished = true;
 			}
 
-			GetGraphEditor()->GetViewLocation(LastGraphView, LastZoom);
+			GetViewLocation(LastGraphView, LastZoom);
 		}
 	}
 	else // don't update until the graph handler has been initialized
@@ -948,6 +962,14 @@ void FBAGraphHandler::DetectGraphChanges()
 	TArray<UEdGraphNode*> NewNodes;
 	for (UEdGraphNode* NewNode : GetFocusedEdGraph()->Nodes)
 	{
+		// Not sure how this can occur, but fixing crash regardless
+		// Do we have to check every time we access this array?
+		// I assume it only hits this edge case since this runs immediately after OnGraphChanged delegate
+		if (!NewNode)
+		{
+			continue;
+		}
+
 		if (FBAUtils::IsCommentNode(NewNode) || FBAUtils::IsKnotNode(NewNode))
 		{
 			continue;
@@ -1189,19 +1211,41 @@ void FBAGraphHandler::FormatNewNodes(const TArray<UEdGraphNode*>& NewNodes, TSha
 
 		if (FBAUtils::GetLinkedPins(NewNodeToFormat, FormatterDirection).Num() == 0)
 		{
-			// node to keep still will be the pin we dragged off
-			if (UEdGraphPin* SelectedPin = GetSelectedPin())
+			// node to keep still will be the first linked node
+			TArray<UEdGraphNode*> LinkedNodes = FBAUtils::GetLinkedNodes(NewNodeToFormat, FBAUtils::GetOppositeDirection(FormatterDirection));
+			if (LinkedNodes.Num())
 			{
-				Parameters.NodeToKeepStill = SelectedPin->GetOwningNode();
+				Parameters.NodeToKeepStill = LinkedNodes[0];
 			}
 		}
 	}
-	else // multiple new nodes, check if there is exactly 1 impure node and use that
+	else // multiple new nodes
 	{
+		// check if there is exactly 1 impure node and use that
 		TArray<UEdGraphNode*> NewImpureNodes = NewNodes.FilterByPredicate(FBAUtils::IsNodeImpure);
 		if (NewImpureNodes.Num() == 1)
 		{
 			NewNodeToFormat = NewImpureNodes[0];
+		}
+		else // just pick a random param node
+		{
+			 NewNodeToFormat = NewNodes[0];
+		}
+
+		// node to keep still will be the first existing linked node
+		for (UEdGraphNode* NewNode : NewNodes)
+		{
+			TArray<UEdGraphNode*> LinkedNodes = FBAUtils::GetLinkedNodes(NewNode);
+			UEdGraphNode** ExistingNode = LinkedNodes.FindByPredicate([&](UEdGraphNode* Node)
+			{
+				return !NewNodes.Contains(Node);
+			});
+
+			if (ExistingNode)
+			{
+				Parameters.NodeToKeepStill = *ExistingNode;
+				break;
+			}
 		}
 	}
 
@@ -1593,6 +1637,52 @@ TSharedPtr<SGraphEditor> FBAGraphHandler::AssignNewGraphEditorFromTab()
 	return nullptr;
 }
 
+bool FBAGraphHandler::IsBlueprintRootNode(UEdGraphNode* Node, bool bOnlyOutputRoots)
+{
+	// blueprint nodes
+	{
+		if (Node->IsA(UK2Node_Event::StaticClass()))
+		{
+			return true;
+		}
+
+		if (FBAUtils::IsInputNode(Node))
+		{
+			return true;
+		}
+	}
+
+	// function entry / result
+	{
+		if (Node->IsA(UK2Node_FunctionEntry::StaticClass()))
+		{
+			return true;
+		}
+
+		if (!bOnlyOutputRoots && Node->IsA(UK2Node_FunctionResult::StaticClass()))
+		{
+			return true;
+		}
+	}
+
+	// macros
+	if (Node->GetClass() == UK2Node_Tunnel::StaticClass())
+	{
+		// tunnel node could be instance of a macro, to find the "root" node of a macro check if it can't be removed from the graph
+		if (!Node->CanUserDeleteNode()) 
+		{
+			if (!bOnlyOutputRoots)
+			{
+				return true;
+			}
+
+			return FBAUtils::GetLinkedPins(Node, EGPD_Output).Num() > 0;
+		}
+	}
+
+	return false;
+}
+
 UEdGraphNode* FBAGraphHandler::GetRootNode(UEdGraphNode* InitialNode, const TArray<UEdGraphNode*>& NodesToFormat, bool bCheckSelectedNode)
 {
 	TSharedPtr<FFormatterInterface> Formatter = MakeFormatter();
@@ -1601,25 +1691,39 @@ UEdGraphNode* FBAGraphHandler::GetRootNode(UEdGraphNode* InitialNode, const TArr
 		return nullptr;
 	}
 
-	EEdGraphPinDirection FormatterDirection = Formatter->GetFormatterSettings().FormatterDirection;
+	FBAFormatterSettings FormatterSettings = Formatter->GetFormatterSettings();
+	EEdGraphPinDirection FormatterDirection = FormatterSettings.FormatterDirection;
 
 	const auto OppositeDirection = UEdGraphPin::GetComplementaryDirection(FormatterDirection);
 
-	const auto NodeTreeFilter = [this, &NodesToFormat](const FPinLink& Link) { return FilterDelegatePin(Link, NodesToFormat); };
+	const auto NodeTreeFilter = [this, &NodesToFormat](const FPinLink& Link)
+	{
+		return FilterDelegatePin(Link, NodesToFormat) && Link.HasBothGraphPins(GetGraphPanel());
+	};
+
 	TSet<UEdGraphNode*> NodeTree = FBAUtils::GetNodeTreeWithFilter(InitialNode, NodeTreeFilter);
 
 	const bool bIsParameterTree = !NodeTree.Array().ContainsByPredicate(FBAUtils::IsNodeImpure);
 	if (bIsParameterTree)
 	{
-		const auto Filter = [&](UEdGraphNode* Node)
+		const auto Filter = [&](const FPinLink& Link)
 		{
-			return FBAUtils::IsNodePure(Node) && !FBAUtils::IsKnotNode(Node) && FilterSelectiveFormatting(Node, FormatterParameters.NodesToFormat.GetCachedNodes());
+			UEdGraphNode* Node = Link.GetToNodeUnsafe();
+			return FBAUtils::IsNodePure(Node)
+				&& !FBAUtils::IsKnotNode(Node)
+				&& FilterSelectiveFormatting(Node, FormatterParameters.NodesToFormat.GetNodes())
+				&& Link.HasBothGraphPins(GetGraphPanel());
 		};
 
 		// get the right-most pure node
 		return FBAUtils::GetTopMostWithFilter(InitialNode, EGPD_Output, Filter);
 	}
 
+	 /* TODO consider if BlueprintInputRoots are needed, it seems to cause issues to select an
+	  * Input root node for BP (which is not a parameter tree) */
+	// TArray<UEdGraphNode*> BlueprintInputRoots;
+
+	TArray<UEdGraphNode*> BlueprintOutputRoots;
 	TArray<UEdGraphNode*> EventNodes;
 	TArray<UEdGraphNode*> UnlinkedNodes;
 	TArray<UEdGraphNode*> RootNodes;
@@ -1631,6 +1735,14 @@ UEdGraphNode* FBAGraphHandler::GetRootNode(UEdGraphNode* InitialNode, const TArr
 		if (FBAUtils::IsKnotNode(Node))
 		{
 			continue;
+		}
+
+		if (FormatterSettings.FormatterType == EBAFormatterType::Blueprint)
+		{
+			if (IsBlueprintRootNode(Node, true))
+			{
+				BlueprintOutputRoots.Add(Node);
+			}
 		}
 
 		if (FBAUtils::IsExtraRootNode(Node) && FBAUtils::DoesNodeHaveExecutionTo(InitialNode, Node))
@@ -1661,9 +1773,15 @@ UEdGraphNode* FBAGraphHandler::GetRootNode(UEdGraphNode* InitialNode, const TArr
 		}
 	}
 
-	// UE_LOG(LogBlueprintAssist, Warning, TEXT("Events %d Unlinked %d Root %d"), EventNodes.Num(), UnlinkedNodes.Num(), RootNodes.Num());
+	const auto& IsNotLinkedToStart = [&InitialNode](UEdGraphNode* A)
+	{
+		return !FBAUtils::DoesNodeHaveExecutionTo(InitialNode, A);
+	};
 
-	if ((EventNodes.Num() == 0) && (UnlinkedNodes.Num() == 0) && (RootNodes.Num() == 0))
+	BlueprintOutputRoots.RemoveAll(IsNotLinkedToStart);
+
+	// UE_LOG(LogBlueprintAssist, Log, TEXT("BP Out %d Events %d Unlinked %d Root %d"), BlueprintOutputRoots.Num(), EventNodes.Num(), UnlinkedNodes.Num(), RootNodes.Num());
+	if (EventNodes.IsEmpty() && UnlinkedNodes.IsEmpty() && RootNodes.IsEmpty() && BlueprintOutputRoots.IsEmpty())
 	{
 		// prefer executable / impure nodes 
 		UEdGraphNode* StartNode = InitialNode; 
@@ -1717,25 +1835,16 @@ UEdGraphNode* FBAGraphHandler::GetRootNode(UEdGraphNode* InitialNode, const TArr
 		return A.NodePosY < B.NodePosY;
 	};
 
+	if (BlueprintOutputRoots.Num() > 0) // use the top left most blueprint root node
+	{
+		FormatterDirection = EGPD_Output;
+		BlueprintOutputRoots.Sort(SortByDirection);
+		return BlueprintOutputRoots[0];
+	}
+
 	if (RootNodes.Num() > 0)
 	{
 		RootNodes.StableSort(SortByDirection);
-		RootNodes.StableSort([FormatterDirection](UEdGraphNode& NodeA, UEdGraphNode& NodeB)
-		{
-			// 1. highest number of pins in formatter direction
-			const int32 NumPinsA = FBAUtils::GetPinsByDirection(&NodeA, FormatterDirection).Num();
-			const int32 NumPinsB = FBAUtils::GetPinsByDirection(&NodeB, FormatterDirection).Num();
-			if (NumPinsA != NumPinsB)
-			{
-				return NumPinsA > NumPinsB;
-			}
-
-			// 2. highest number of linked exec pins
-			const int32 NumLinkedA = FBAUtils::GetLinkedPins(&NodeA).FilterByPredicate(FBAUtils::IsExecPin).Num();
-			const int32 NumLinkedB = FBAUtils::GetLinkedPins(&NodeB).FilterByPredicate(FBAUtils::IsExecPin).Num();
-			return NumLinkedA > NumLinkedB;
-		});
-
 		return RootNodes[0];
 	}
 
@@ -1745,19 +1854,20 @@ UEdGraphNode* FBAGraphHandler::GetRootNode(UEdGraphNode* InitialNode, const TArr
 		return EventNodes[0];
 	}
 
-	if (UnlinkedNodes.ContainsByPredicate(FBAUtils::IsNodeImpure))
-	{
-		UnlinkedNodes.RemoveAll(FBAUtils::IsNodePure);
-	}
-
 	if (UnlinkedNodes.Contains(InitialNode))
 	{
 		return InitialNode;
 	}
 
-	// use the top left most unlinked node
-	UnlinkedNodes.Sort(SortByDirection);
-	return UnlinkedNodes[0];
+	if (UnlinkedNodes.Num() > 0)
+	{
+		// use the top left most unlinked node
+		UnlinkedNodes.Sort(SortByDirection);
+		return UnlinkedNodes[0];
+	}
+
+	UE_LOG(LogBlueprintAssist, Error, TEXT("[%hs] No root node found"), __FUNCTION__);
+	return nullptr;
 }
 
 TSharedPtr<FFormatterInterface> FBAGraphHandler::MakeFormatter()
@@ -2150,6 +2260,39 @@ void FBAGraphHandler::UngroupNodes(const TSet<UEdGraphNode*>& NodeSet)
 	CleanupNodeGroups();
 }
 
+void FBAGraphHandler::SetViewLocation(const FVector2D& NewLocation, float NewZoom)
+{
+	if (auto Editor = GetGraphEditor())
+	{
+#if BA_UE_VERSION_OR_LATER(5, 6)
+		Editor->SetViewLocation(FVector2f(NewLocation), NewZoom);
+#else
+		Editor->SetViewLocation(NewLocation, NewZoom);
+#endif
+	}
+}
+
+void FBAGraphHandler::GetViewLocation(FVector2D& OutLocation, float& OutZoom)
+{
+	if (auto Editor = GetGraphEditor())
+	{
+#if BA_UE_VERSION_OR_LATER(5, 6)
+		FVector2f Loc2f;
+		Editor->GetViewLocation(Loc2f, OutZoom);
+		OutLocation.X = Loc2f.X;
+		OutLocation.Y = Loc2f.Y;
+#else
+		Editor->GetViewLocation(OutLocation, OutZoom);
+#endif
+	}
+}
+
+void FBAGraphHandler::GetViewLocation(FVector2D& OutLocation)
+{
+	float Zoom;
+	return GetViewLocation(OutLocation, Zoom);
+}
+
 UEdGraph* FBAGraphHandler::GetFocusedEdGraph()
 {
 	if (CachedEdGraph.IsValid())
@@ -2433,6 +2576,11 @@ void FBAGraphHandler::UpdateCachedNodeSize(float DeltaTime)
 	bool bIsPanelValid = false;
 	for (auto Node : Graph->Nodes)
 	{
+		if (!Node)
+		{
+			continue;
+		}
+
 		if (GraphPanel->GetNodeWidgetFromGuid(Node->NodeGuid).IsValid())
 		{
 			bIsPanelValid = true;
@@ -2474,7 +2622,7 @@ void FBAGraphHandler::UpdateCachedNodeSize(float DeltaTime)
 			return NodeA->NodePosX <= NodeB->NodePosX;
 		});
 
-		GraphEditor->GetViewLocation(ViewCache, ZoomCache);
+		GetViewLocation(ViewCache, ZoomCache);
 		bFullyZoomed = true;
 	}
 
@@ -2507,11 +2655,11 @@ void FBAGraphHandler::UpdateCachedNodeSize(float DeltaTime)
 			FocusedNode = FirstNode;
 
 			// Zoom fully in, to cache the node size
-			GraphEditor->SetViewLocation(FVector2D(FocusedNode->NodePosX, FocusedNode->NodePosY), 1.f);
+			SetViewLocation(FVector2D(FocusedNode->NodePosX, FocusedNode->NodePosY), 1.f);
 		}
 		else
 		{
-			GraphEditor->SetViewLocation(FVector2D(FocusedNode->NodePosX, FocusedNode->NodePosY), 1.f);
+			SetViewLocation(FVector2D(FocusedNode->NodePosX, FocusedNode->NodePosY), 1.f);
 
 			DelayedCacheSizeTimeout.Tick();
 			if (DelayedCacheSizeTimeout.IsComplete())
@@ -2592,7 +2740,7 @@ void FBAGraphHandler::UpdateCachedNodeSize(float DeltaTime)
 		// for comment nodes we only want to cache the title bar height
 		if (FBAUtils::IsCommentNode(Node))
 		{
-			Size.Y = GraphNode->GetDesiredSizeForMarquee().Y;
+			Size.Y = FBAUtils::GetGraphNodeMarqueeSize(GraphNode).Y;
 		}
 
 		// the size can be zero when a node is initially created, do not use this value
@@ -2628,7 +2776,7 @@ void FBAGraphHandler::UpdateCachedNodeSize(float DeltaTime)
 
 	if ((PendingSize.Num() == 0) && bFullyZoomed)
 	{
-		GetGraphEditor()->SetViewLocation(ViewCache, ZoomCache);
+		SetViewLocation(ViewCache, ZoomCache);
 		bFullyZoomed = false;
 		FocusedNode = nullptr;
 
@@ -2701,9 +2849,7 @@ void FBAGraphHandler::UpdateNodesRequiringFormatting()
 		CountError -= 1;
 		if (CountError < 0)
 		{
-			FNotificationInfo Notification(FText::FromString("Failed to format all nodes"));
-			Notification.ExpireDuration = 2.0f;
-			FSlateNotificationManager::Get().AddNotification(Notification)->SetCompletionState(SNotificationItem::CS_Fail);
+			FBAMiscUtils::ShowSimpleSlateNotification(INVTEXT("Failed to format all nodes"), SNotificationItem::CS_Fail);
 
 			NodesToFormatCopy.Empty();
 			PendingFormatting.Empty();
@@ -3146,7 +3292,7 @@ void FBAGraphHandler::UpdateLerpViewport(const float DeltaTime)
 	{
 		FVector2D CurrentView;
 		float CurrentZoom;
-		GetGraphEditor()->GetViewLocation(CurrentView, CurrentZoom);
+		GetViewLocation(CurrentView, CurrentZoom);
 
 		TSharedPtr<SGraphPanel> GraphPanel = GetGraphPanel();
 		if (!GraphPanel.IsValid())
@@ -3165,7 +3311,7 @@ void FBAGraphHandler::UpdateLerpViewport(const float DeltaTime)
 		if (FVector2D::Distance(CurrentView, TargetView) > 10.f)
 		{
 			const FVector2D NewView = FMath::Vector2DInterpTo(CurrentView, TargetView, DeltaTime, 10.f);
-			GetGraphEditor()->SetViewLocation(NewView, CurrentZoom);
+			SetViewLocation(NewView, CurrentZoom);
 		}
 		else
 		{
@@ -3238,6 +3384,9 @@ void FBAGraphHandler::FormatAllEvents()
 		return;
 	}
 
+	const FBAFormatterSettings& FormatterSettings = UBASettings::GetFormatterSettings(EdGraph);
+	bool bIsBlueprintFormatting = FormatterSettings.FormatterType == EBAFormatterType::Blueprint;
+
 	const EBAFormatAllStyle FormatAllStyle = UBASettings::Get().FormatAllStyle;
 
 	TArray<TWeakObjectPtr<UEdGraphNode>> ExtraNodes;
@@ -3267,18 +3416,18 @@ void FBAGraphHandler::FormatAllEvents()
 			{
 				ComponentEvents.Add(Node);
 			}
-			else if (Node->IsA(UK2Node_Event::StaticClass())) // Node->IsA(UK2Node_ActorBoundEvent::StaticClass()) ||  
+			else if (Node->IsA(UK2Node_Event::StaticClass()))  
 			{
 				ActorEvents.Add(Node);
 			}
-			else if (FBAUtils::IsEventNode(Node))
+			else if (FBAUtils::IsEventNode(Node) || (bIsBlueprintFormatting && IsBlueprintRootNode(Node, false)))
 			{
 				OtherEvents.Add(Node);
 			}
 		}
 		else
 		{
-			if (FBAUtils::IsEventNode(Node) || FBAUtils::IsExtraRootNode(Node))
+			if (FBAUtils::IsEventNode(Node) || FBAUtils::IsExtraRootNode(Node) || (bIsBlueprintFormatting && IsBlueprintRootNode(Node, false)))
 			{
 				OtherEvents.Add(Node);
 			}
@@ -3307,8 +3456,18 @@ void FBAGraphHandler::FormatAllEvents()
 		return FBAUtils::GetPinsByDirection(NodeA.Get(), EGPD_Input).Num() < FBAUtils::GetPinsByDirection(NodeB.Get(), EGPD_Input).Num();
 	};
 
-	const auto TopMostSorter = [](TWeakObjectPtr<UEdGraphNode> NodeA, TWeakObjectPtr<UEdGraphNode> NodeB)
+	const auto TopMostSorter = [](const TWeakObjectPtr<UEdGraphNode>& NodeA, const TWeakObjectPtr<UEdGraphNode>& NodeB)
 	{
+		if (!NodeA.IsValid())
+		{
+			return false;
+		}
+
+		if (!NodeB.IsValid())
+		{
+			return true;
+		}
+
 		return NodeA.Get()->NodePosY < NodeB.Get()->NodePosY;
 	};
 
@@ -3317,6 +3476,10 @@ void FBAGraphHandler::FormatAllEvents()
 	for (int i = 0; i < FormatAllColumns.Num(); ++i)
 	{
 		TArray<TWeakObjectPtr<UEdGraphNode>>& Column = FormatAllColumns[i];
+		Column.RemoveAll([](TWeakObjectPtr<UEdGraphNode>& Node)
+		{
+			return !Node.IsValid();
+		});
 
 		for (TWeakObjectPtr<UEdGraphNode> WeakPtr : Column)
 		{
@@ -3443,6 +3606,7 @@ TSharedPtr<FFormatterInterface> FBAGraphHandler::FormatNodes(UEdGraphNode* Node,
 	UEdGraphNode* NodeToFormat = GetRootNode(Node, FormatterParameters.NodesToFormat.GetNodes(), bCheckSelectedNode);
 	if (!NodeToFormat)
 	{
+		FBAMiscUtils::ShowSimpleSlateNotification(INVTEXT("Unable to format, no root node found"), SNotificationItem::CS_Fail);
 		return nullptr;
 	}
 
@@ -3471,16 +3635,92 @@ TSharedPtr<FFormatterInterface> FBAGraphHandler::FormatNodes(UEdGraphNode* Node,
 			PreFormatting();
 		}
 
-		Formatter->PreFormatting();
-		// GraphOverlay->DrawBounds(FBAUtils::GetNodeBounds(Node));
-		// GraphOverlay->DrawBounds(FBAUtils::GetNodeBounds(NodeToFormat), FLinearColor::Red);
-		Formatter->FormatNode(NodeToFormat);
-		Formatter->PostFormatting();
-		OnNodeFormatted.Broadcast(Node, *(Formatter.Get()));
+		const FString GraphHint = FString::Printf(TEXT("%s (%s)"),
+			*FBAUtils::GetObjectClassName(EdGraph).ToString(),
+			*FBAUtils::GraphTypeToString(FBAUtils::GetGraphType(EdGraph))
+		);
 
-		if (!bUsingFormatAll)
+		FGenericCrashContext::SetEngineData("BAGraphHint", GraphHint);
+		FGenericCrashContext::SetEngineData("BAAssetHint", FBAUtils::GetObjectClassName(EdGraph->GetOutermostObject()).ToString());
+
+#if WITH_ADDITIONAL_CRASH_CONTEXTS
+		if (UBASettings_Advanced::Get().bDumpFormattingCrashNodes && (UBASettings_Advanced::Get().CrashReportingMethod != EBACrashReportingMethod::Never))
 		{
-			PostFormatting({ Formatter });
+			static TCHAR TextBuffer[48 * 1024];
+			static TCHAR PathBuffer[1024];
+
+			FString NodeTreeStr;
+
+			// ExportNodesToText seems to have some odd side-effects on non-bp graphs, so skip it for other graphs
+			if (FBAUtils::IsBlueprintGraph(GetFocusedEdGraph())) 
+			{
+				TSet<UEdGraphNode*> RelatedNodes = FBAUtils::GetNodeTree(NodeToFormat);
+				if (TSharedPtr<FBACommentContainsGraph> CommentGraph = FormatterParameters.MasterContainsGraph)
+				{
+					TSet<UEdGraphNode*> NodesCopy = RelatedNodes;
+					for (UEdGraphNode* N : NodesCopy)
+					{
+						for (UEdGraphNode_Comment* C : CommentGraph->GetContainingCommentsForNode(N))
+						{
+							RelatedNodes.Add(C);
+						}
+					}
+				}
+
+				if (RelatedNodes.Num())
+				{
+					NodeTreeStr = FBAMiscUtils::CompressString(FBAUtils::ExportNodesToText(RelatedNodes));
+
+					// if our graph is too big then just clear it
+					if (NodeTreeStr.Len() >= UE_ARRAY_COUNT(TextBuffer))
+					{
+						// UE_LOG(LogTemp, Warning, TEXT("Node Tree won't be saved %d %d"), NodeTreeStr.Len(), (int) UE_ARRAY_COUNT(TextBuffer));
+						NodeTreeStr.Empty();
+					}
+				}
+			}
+
+			const FString CrashDirPath = FPaths::ConvertRelativePathToFull(FBAPaths::BACrashDir());
+
+			// Ignore the default writer since we want to save the log to a different path so it doesn't get sent to Epic
+			UE_ADD_CRASH_CONTEXT_SCOPE([&](FCrashContextExtendedWriter& Writer)
+			{
+				// the _0000 is meant to come from FGenericCrashContext::StaticCrashContextIndex but it is private so assume it is 0
+				if (!NodeTreeStr.IsEmpty())
+				{
+					FCString::Snprintf(PathBuffer, UE_ARRAY_COUNT(PathBuffer), TEXT("%s/%s_0000"), *CrashDirPath, FGenericCrashContext::GetCachedSessionContext().CrashGUIDRoot);
+					IPlatformFile::GetPlatformPhysical().CreateDirectoryTree(PathBuffer);
+
+					FCString::Strcat(PathBuffer, UE_ARRAY_COUNT(PathBuffer), TEXT("/Nodes.txt"));
+
+					FCString::Snprintf(TextBuffer, UE_ARRAY_COUNT(TextBuffer), TEXT("%s"), *NodeTreeStr);
+					FBAMiscUtils::WriteTextToFile(PathBuffer, TextBuffer);
+				}
+			});
+
+			if (ensureMsgf(IsValid(NodeToFormat), TEXT("NodeToFormat become invalid before formatting. Unable to perform formatting.")))
+			{
+				Formatter->PreFormatting();
+				Formatter->FormatNode(NodeToFormat);
+				Formatter->PostFormatting();
+
+				if (!bUsingFormatAll)
+				{
+					PostFormatting({ Formatter });
+				}
+			}
+		}
+		else
+#endif
+		{
+			Formatter->PreFormatting();
+			Formatter->FormatNode(NodeToFormat);
+			Formatter->PostFormatting();
+
+			if (!bUsingFormatAll)
+			{
+				PostFormatting({ Formatter });
+			}
 		}
 	}
 
@@ -3499,7 +3739,11 @@ void FBAGraphHandler::CancelActiveFormatting()
 
 	if (bFullyZoomed)
 	{
-		GetGraphEditor()->SetViewLocation(ViewCache, ZoomCache);
+		if (TSharedPtr<SGraphEditor> GraphEditor = GetGraphEditor())
+		{
+			SetViewLocation(ViewCache, ZoomCache);
+		}
+
 		bFullyZoomed = false;
 		FocusedNode = nullptr;
 	}
@@ -3524,7 +3768,7 @@ bool FBAGraphHandler::CacheNodeSize(UEdGraphNode* Node)
 	// for comment nodes we only want to cache the title bar height
 	if (FBAUtils::IsCommentNode(Node))
 	{
-		Size.Y = GraphNode->GetDesiredSizeForMarquee().Y;
+		Size.Y = FBAUtils::GetGraphNodeMarqueeSize(GraphNode).Y;
 	}
 
 	// cache pin offset

@@ -2,7 +2,11 @@
 
 #include "BlueprintAssistGraphHandler.h"
 #include "BlueprintAssistUtils.h"
+#include "PropertyEditorClipboard.h"
 #include "SGraphPanel.h"
+#include "SlateOptMacros.h"
+#include "UnrealEdMisc.h"
+#include "BlueprintAssistMisc/BACrashReporter.h"
 #include "BlueprintAssistMisc/BAMiscUtils.h"
 #include "Components/VerticalBox.h"
 #include "EdGraph/EdGraph.h"
@@ -12,6 +16,7 @@
 #include "Widgets/Docking/SDockTab.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SEditableText.h"
+#include "Widgets/Text/SInlineEditableTextBlock.h"
 
 void SBADebugMenuRow::Construct(const FArguments& InArgs)
 {
@@ -26,6 +31,7 @@ void SBADebugMenuRow::Construct(const FArguments& InArgs)
 	];
 }
 
+BEGIN_SLATE_FUNCTION_BUILD_OPTIMIZATION
 void SBADebugMenu::Construct(const FArguments& InArgs)
 {
 	FocusedAssetEditor = FText::FromString("None");
@@ -169,8 +175,42 @@ void SBADebugMenu::Construct(const FArguments& InArgs)
 				return FReply::Handled();
 			})
 		]
+		+ SVerticalBox::Slot().AutoHeight()
+		[
+			SNew(SInlineEditableTextBlock)
+			.Text(INVTEXT("Enter node text"))
+			.OnTextCommitted_Lambda([](const FText& NewText, ETextCommit::Type InTextCommit)
+			{
+				if (InTextCommit == ETextCommit::Type::OnEnter)
+				{
+					FString NodeText;
+					if (FBAMiscUtils::DecompressString(NewText.ToString(), NodeText))
+					{
+						UE_LOG(LogTemp, Warning, TEXT("%s"), *NodeText);
+						FBAMiscUtils::ClipboardCopy(NodeText);
+					}
+				}
+			})
+		]
+		+ SVerticalBox::Slot().AutoHeight()
+		[
+			SNew(SButton).Text(INVTEXT("Crash Reporter")).OnClicked_Lambda([]()
+			{
+				FBACrashReporter::Get().ShowNotification();
+				return FReply::Handled();
+			})
+		]
+		+ SVerticalBox::Slot().AutoHeight()
+		[
+			SNew(SButton).Text(INVTEXT("Restart editor")).OnClicked_Lambda([]()
+			{
+				FUnrealEdMisc::Get().RestartEditor();
+				return FReply::Handled();
+			})
+		]
 	];
 }
+END_SLATE_FUNCTION_BUILD_OPTIMIZATION
 
 void SBADebugMenu::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
 {
@@ -211,19 +251,20 @@ void SBADebugMenu::Tick(const FGeometry& AllottedGeometry, const double InCurren
 					FText::FromString(FBAUtils::GetGraphGuid(EdGraph).ToString()));
 		}
 
-		if (auto GraphNode = FBAUtils::GetHoveredGraphNode(GraphPanel))
+		if (TSharedPtr<SGraphNode> GraphNode = FBAUtils::GetHoveredGraphNode(GraphPanel))
 		{
 			if (auto Node = GraphNode->GetNodeObj())
 			{
-				NodeUnderCursor = FText::Format(INVTEXT("{0} ({1}) ({2}) ({3}) ({4})"), 
+				NodeUnderCursor = FText::Format(INVTEXT("{0} ({1}) ({2}) ({3}) ({4}) ({5})"), 
 					FText::FromString(Node->GetClass()->GetName()),
 					FText::FromString(GetNameSafe(Node)),
 					FText::FromString(FString::FromInt(Node->Pins.Num())),
 					FText::FromString(Node->NodeGuid.ToString()),
-					FText::FromString(FBAUtils::GetNodeGuid(Node).ToString()));
+					FText::FromString(FBAUtils::GetNodeGuid(Node).ToString()),
+					FText::FromString(FString::FromInt(GraphNode->GetSortDepth())));
 
 				NodeUnderCursorSize = FText::Format(INVTEXT("P:{0} S:{1})"),
-					FText::FromString(GraphNode->GetPosition().ToString()),
+					FText::FromString(FBAUtils::GetGraphNodePos(GraphNode).ToString()),
 					FText::FromString(GraphNode->GetDesiredSize().ToString()));
 			}
 		}

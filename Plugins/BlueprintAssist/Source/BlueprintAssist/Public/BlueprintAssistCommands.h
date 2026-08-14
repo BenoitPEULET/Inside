@@ -106,6 +106,9 @@ public:
 	/** Link the selected pin to the hovered pin */
 	TSharedPtr<FUICommandInfo> LinkToHoveredPin;
 
+	/** Straighten the hovered or selected pin */
+	TSharedPtr<FUICommandInfo> StraightenHoveredPin;
+
 	/** Split the selected or hovered pin */
 	TSharedPtr<FUICommandInfo> SplitPin;
 

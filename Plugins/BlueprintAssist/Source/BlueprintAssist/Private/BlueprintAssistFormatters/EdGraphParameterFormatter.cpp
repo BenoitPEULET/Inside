@@ -686,6 +686,11 @@ void FEdGraphParameterFormatter::FormatX()
 					}
 
 					FPinLink CurrentLink = FPinLink(Pin, LinkedPin);
+					if (!CurrentLink.HasBothGraphPins(GraphHandler->GetGraphPanel()))
+					{
+						continue;
+					}
+
 					if (VisitedLinks.Contains(CurrentLink))
 					{
 						continue;
@@ -744,6 +749,11 @@ void FEdGraphParameterFormatter::FormatY(
 	if (UEdGraphNode* ParentNode = CurrentLink.GetFromNodeUnsafe())
 	{
 		NodeRelativeMapping.UpdateRelativeY(CurrentNode, ParentNode);
+	}
+
+	if (!NodeInfoMap.Contains(CurrentNode))
+	{
+		return;
 	}
 
 	const TArray<UEdGraphNode*> Children = NodeInfoMap[CurrentNode]->GetChildNodes();

@@ -130,6 +130,8 @@ public:
 
 	void DeleteCache();
 
+	void Cleanup();
+
 	void CleanupFiles();
 
 	void ClearLastFormatted();

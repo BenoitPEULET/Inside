@@ -100,6 +100,13 @@ void FBACommandsImpl::RegisterCommands()
 		FInputChord(EModifierKey::Control | EModifierKey::Shift, EKeys::Q));
 
 	UI_COMMAND(
+		StraightenHoveredPin,
+		"Straighten Hovered Pin",
+		"Straighten the hovered or selected pin",
+		EUserInterfaceActionType::Button,
+		FInputChord());
+
+	UI_COMMAND(
 		SplitPin,
 		"Split current pin",
 		"Split the selected or hovered pin",

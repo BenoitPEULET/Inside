@@ -105,18 +105,19 @@ UBASettings::UBASettings(const FObjectInitializer& ObjectInitializer)
 	BlueprintFormatterSettings.Padding = DefaultFormatterPaddingSize; 
 	BlueprintFormatterSettings.AutoFormatting = EBAAutoFormatting::FormatAllConnected; 
 	BlueprintFormatterSettings.FormatterDirection = EGPD_Output;
-	BlueprintFormatterSettings.RootNodes = { "K2Node_Tunnel" }; 
 	BlueprintFormatterSettings.ExecPinName = UEdGraphSchema_K2::PC_Exec; 
 	BlueprintFormatterSettings.ExecPinName = "exec";
 
 	FBAFormatterSettings BehaviorTreeSettings(
 		DefaultFormatterPaddingSize,
-		EBAAutoFormatting::FormatAllConnected,
+		EBAAutoFormatting::Never,
 		EGPD_Output,
 		{ "BehaviorTreeGraphNode_Root" }
 	);
 
 	BehaviorTreeSettings.FormatterType = EBAFormatterType::BehaviorTree;
+
+	BehaviorTreeBranchExtraPadding = 100.0f;
 
 	NonBlueprintFormatterSettings.Add("BehaviorTreeGraph", BehaviorTreeSettings);
 
@@ -293,6 +294,7 @@ void UBASettings::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedE
 	check(FBlueprintAssistModule::IsAvailable())
 
 	const FName PropertyName = (PropertyChangedEvent.Property != nullptr) ? PropertyChangedEvent.Property->GetFName() : NAME_None;
+	const FName MemberName = (PropertyChangedEvent.MemberProperty != nullptr) ? PropertyChangedEvent.MemberProperty->GetFName() : NAME_None;
 
 	// when we change any formatting related setting, clear the formatting data
 	for (auto GH : FBATabHandler::Get().GetAllGraphHandlers())
@@ -300,6 +302,17 @@ void UBASettings::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedE
 		if (GH)
 		{
 			GH->ClearFormatters();
+		}
+	}
+
+	if (MemberName == GET_MEMBER_NAME_CHECKED(UBASettings, BlueprintFormatterSettings))
+	{
+		if (PropertyName == GET_MEMBER_NAME_CHECKED(FBAFormatterSettings, FormatterDirection))
+		{
+			if (BlueprintFormatterSettings.FormatterDirection != EGPD_Output)
+			{
+				BlueprintFormatterSettings.FormatterDirection = EGPD_Output;
+			}
 		}
 	}
 

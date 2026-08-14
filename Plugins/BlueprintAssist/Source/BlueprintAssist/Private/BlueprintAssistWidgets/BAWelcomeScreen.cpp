@@ -3,15 +3,17 @@
 
 #include "BlueprintAssistWidgets/BAWelcomeScreen.h"
 
+#include "BASettings_Meta.h"
 #include "BlueprintAssistCommands.h"
 #include "BlueprintAssistSettings.h"
+#include "BlueprintAssistSettings_Advanced.h"
 #include "BlueprintAssistSettings_EditorFeatures.h"
 #include "BlueprintAssistStyle.h"
 #include "BlueprintAssistTypes.h"
+#include "ISettingsEditorModule.h"
 #include "ISinglePropertyView.h"
 #include "BlueprintAssistMisc/BAMiscUtils.h"
 #include "Framework/Application/SlateApplication.h"
-#include "Framework/Commands/InputBindingManager.h"
 #include "Modules/ModuleManager.h"
 #include "Widgets/SWindow.h"
 #include "Widgets/Docking/SDockTab.h"
@@ -241,6 +243,37 @@ TSharedRef<SWidget> SBAWelcomeScreen::MakeCustomizePage()
 		+ SVerticalBox::Slot().AutoHeight().Padding(0, 12.0f)
 		[
 			MakePropertiesList(MiscProps)
+		]
+		+ SVerticalBox::Slot().AutoHeight()
+		[
+			SNew(SRichTextBlock).AutoWrapText(true).WrappingPolicy(ETextWrappingPolicy::DefaultWrapping).Text(INVTEXT("<LargeText>Settings</>")).DecoratorStyleSet(&BA_STYLE_CLASS::Get())
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 12.0f)
+		[
+			SNew(SVerticalBox)
+			+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 4.0f, 0.0f, 0.0f)
+			[
+				MakeProperty(GetMutableDefault<UBASettings_Meta>(), GET_MEMBER_NAME_CHECKED(UBASettings_Meta, CustomSettingsIniPath))
+			]
+			+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 4.0f).HAlign(HAlign_Left)
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot().AutoWidth()
+				[
+					SNew(SButton)
+					.Text(INVTEXT("Save Settings"))
+					.IsEnabled_Static(&SBAWelcomeScreen::IsSaveCustomSettingsEnabled)
+					.OnClicked_Static(&SBAWelcomeScreen::OnSaveCustomSettingsClicked)
+				]
+				/* TODO why does loading custom settings not work here, but it does on module start? */
+				// + SHorizontalBox::Slot().AutoWidth()
+				// [
+				// 	SNew(SButton)
+				// 	.Text(INVTEXT("Load Settings"))
+				// 	.IsEnabled_Static(&SBAWelcomeScreen::IsSaveCustomSettingsEnabled)
+				// 	.OnClicked_Static(&SBAWelcomeScreen::OnLoadCustomSettingsClicked)
+				// ]
+			]
 		];
 }
 
@@ -266,4 +299,48 @@ TSharedRef<SWidget> SBAWelcomeScreen::MakePropertiesList(const TMap<UObject*, TA
 	}
 
 	return PropBox;
+}
+
+TSharedRef<SWidget> SBAWelcomeScreen::MakeProperty(UObject* Obj, FName PropName)
+{
+	FPropertyEditorModule& EditModule = FModuleManager::Get().GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
+
+	FSinglePropertyParams Params;
+	Params.NotifyHook = &SettingsPropertyHook;
+	Params.NamePlacement = EPropertyNamePlacement::Type::Inside;
+
+	return EditModule.CreateSingleProperty(Obj, PropName, Params).ToSharedRef();
+}
+
+FReply SBAWelcomeScreen::OnSaveCustomSettingsClicked()
+{
+	const FString& Path = FConfigCacheIni::NormalizeConfigIniPath(UBASettings_Meta::Get().CustomSettingsIniPath.FilePath);
+	if (!Path.IsEmpty())
+	{
+		UE_LOG(LogBlueprintAssist, Log, TEXT("Saved settings to file: %s"), *Path)
+		UBASettings::GetMutable().TryUpdateDefaultConfigFile(*Path);
+		UBASettings_EditorFeatures::GetMutable().TryUpdateDefaultConfigFile(*Path);
+		UBASettings_Advanced::GetMutable().TryUpdateDefaultConfigFile(*Path);
+	}
+
+	return FReply::Handled();
+}
+
+FReply SBAWelcomeScreen::OnLoadCustomSettingsClicked()
+{
+	const FString& Path = FConfigCacheIni::NormalizeConfigIniPath(UBASettings_Meta::Get().CustomSettingsIniPath.FilePath);
+	if (FPaths::FileExists(Path))
+	{
+		UE_LOG(LogBlueprintAssist, Log, TEXT("Loading custom settings from file: %s"), *Path)
+		UBASettings::GetMutable().LoadConfig(nullptr, *Path);
+		UBASettings_EditorFeatures::GetMutable().LoadConfig(nullptr, *Path);
+		UBASettings_Advanced::GetMutable().LoadConfig(nullptr, *Path);
+	}
+
+	return FReply::Handled();
+}
+
+bool SBAWelcomeScreen::IsSaveCustomSettingsEnabled()
+{
+	return !UBASettings_Meta::Get().CustomSettingsIniPath.FilePath.IsEmpty();
 }

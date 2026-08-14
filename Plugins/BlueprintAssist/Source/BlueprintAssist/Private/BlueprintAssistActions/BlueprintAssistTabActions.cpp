@@ -217,7 +217,7 @@ void FBATabActions::ShiftCameraInDirection(int X, int Y) const
 		/** get the current view location */
 		float Zoom;
 		FVector2D CurrentViewLocation;
-		GraphHandler->GetGraphEditor()->GetViewLocation(CurrentViewLocation, Zoom);
+		GraphHandler->GetViewLocation(CurrentViewLocation, Zoom);
 
 		/** Shift the current view location */
 		const FVector2D Offset = FVector2D(X, Y) * UBASettings_EditorFeatures::Get().ShiftCameraDistance / Zoom;

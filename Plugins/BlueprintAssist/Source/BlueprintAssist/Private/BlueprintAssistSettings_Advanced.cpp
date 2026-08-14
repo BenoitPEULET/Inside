@@ -6,6 +6,7 @@
 #include "DetailCategoryBuilder.h"
 #include "DetailLayoutBuilder.h"
 #include "DetailWidgetRow.h"
+#include "BlueprintAssistMisc/BACrashReporter.h"
 #include "Misc/MessageDialog.h"
 #include "Widgets/Input/SButton.h"
 
@@ -20,7 +21,6 @@ UBASettings_Advanced::UBASettings_Advanced(const FObjectInitializer& ObjectIniti
 	bRemoveLoopingCausedBySwapping = true;
 
 	//~~~ Material Graph
-	bEnableMaterialGraphPinHoverFix = false; // Workaround
 	bGenerateUniqueGUIDForMaterialExpressions = false;
 
 	//~~~ Cache
@@ -33,6 +33,12 @@ UBASettings_Advanced::UBASettings_Advanced(const FObjectInitializer& ObjectIniti
 	bDisableBlueprintAssistPlugin = false;
 	bHighlightBadComments = false;
 
+	//~~~ Crash Reporter
+	CrashReportingMethod = EBACrashReportingMethod::Ask;
+	bDumpFormattingCrashNodes = true;
+	bIncludeNodesInCrashReport = false;
+	bIncludeSettingsInCrashReport = true;
+
 	SaveSettingsDefaults();
 }
 
@@ -43,6 +49,13 @@ void UBASettings_Advanced::PostEditChangeProperty(struct FPropertyChangedEvent& 
 	if (PropertyName == GET_MEMBER_NAME_CHECKED(UBASettings_Advanced, CacheSaveLocation))
 	{
 		FBACache::Get().SaveCache();
+	}
+	else if (PropertyName == GET_MEMBER_NAME_CHECKED(UBASettings_Advanced, CrashReportingMethod))
+	{
+		if (CrashReportingMethod == EBACrashReportingMethod::Ask)
+		{
+			FBACrashReporter::Get().ShowNotification();
+		}
 	}
 
 	UObject::PostEditChangeProperty(PropertyChangedEvent);

@@ -90,8 +90,6 @@ public:
 private:
 	TArray<TSharedPtr<FUICommandList>> CommandLists;
 
-	TArray<FAssetData> CutAssets;
-
 	TSet<FKey> KeysDown;
 	TMap<FKey, double> KeysDownStartTime;
 
@@ -104,8 +102,6 @@ private:
 #endif
 
 	bool ProcessFolderBookmarkInput();
-
-	bool ProcessContentBrowserInput();
 
 	void OnWindowFocusChanged(bool bIsFocused);
 

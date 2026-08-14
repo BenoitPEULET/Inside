@@ -8,6 +8,7 @@
 #include "UObject/ObjectMacros.h"
 #include "UObject/WeakObjectPtr.h"
 
+class SWindow;
 class UBARootObject;
 class FBlueprintAssistGraphPanelNodeFactory;
 
@@ -48,4 +49,5 @@ private:
 	FDelegateHandle LiveCodingDelegate;
 
 	void OnPostEngineInit();
+	void OnMainFrameCreationFinished(TSharedPtr<SWindow> InRootWindow, bool bIsRunningStartupDialog);
 };

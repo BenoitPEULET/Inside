@@ -51,7 +51,12 @@ public class BlueprintAssist : ModuleRules
 				"PropertyEditor",
 				"ApplicationCore",
 				"AudioEditor", 
-				"AssetSearch"
+				"AssetSearch",
+				"HTTP",
+				"XmlParser", 
+				"ContentBrowserData",
+				"EditorSubsystem", 
+				"SettingsEditor"
 			}
 		);
 

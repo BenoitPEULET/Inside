@@ -176,10 +176,10 @@ private:
 	TArray<UEdGraphNode*> CachedNodes;
 };
 
-class FBASettingsPropertyHook final : public FNotifyHook
+class FBASettingsPropertyHook : public FNotifyHook
 {
 public:
-	FBASettingsPropertyHook() {};
+	FBASettingsPropertyHook() {}
 	virtual ~FBASettingsPropertyHook() {};
 
 	virtual void NotifyPreChange(FProperty* PropertyAboutToChange) override;

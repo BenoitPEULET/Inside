@@ -58,6 +58,6 @@ namespace BA::Private
 // (Stuff.*GPrivateStuffLogVal)(); // Logs: "Val: 7"
 //
 #define BA_DEFINE_PRIVATE_MEMBER_PTR(Type, Name, Class, Member) \
-TIdentity_T<PREPROCESSOR_REMOVE_OPTIONAL_PARENS(Type)> PREPROCESSOR_REMOVE_OPTIONAL_PARENS(Class)::* Name; \
-template struct BA::Private::TBAPrivateAccess<&Name, &PREPROCESSOR_REMOVE_OPTIONAL_PARENS(Class)::Member>
+TIdentity_T<UE_REMOVE_OPTIONAL_PARENS(Type)> UE_REMOVE_OPTIONAL_PARENS(Class)::* Name; \
+template struct BA::Private::TBAPrivateAccess<&Name, &UE_REMOVE_OPTIONAL_PARENS(Class)::Member>
 #endif

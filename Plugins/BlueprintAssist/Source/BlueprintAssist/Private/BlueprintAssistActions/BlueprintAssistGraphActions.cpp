@@ -3,6 +3,7 @@
 #include "BlueprintAssistCommands.h"
 #include "BlueprintAssistGraphHandler.h"
 #include "BlueprintAssistSettings_Advanced.h"
+#include "BlueprintAssistTabHandler.h"
 #include "BlueprintAssistUtils.h"
 #include "EdGraphSchema_K2_Actions.h"
 #include "FileHelpers.h"
@@ -38,6 +39,13 @@ bool FBAGraphActionsBase::HasGraphNonReadOnly() const
 	}
 
 	return false;
+}
+
+TSharedPtr<FBAGraphHandler> FBAGraphActionsBase::GetGraphHandlerChecked()
+{
+	TSharedPtr<FBAGraphHandler> GraphHandler = FBATabHandler::Get().GetActiveGraphHandler();
+	check(GraphHandler.IsValid());
+	return GraphHandler;
 }
 
 void FBAGraphActions::Init()
@@ -206,7 +214,7 @@ void FBAGraphActions::OnOpenContextMenu()
 	}
 
 	const FVector2D MenuLocation = FSlateApplication::Get().GetCursorPos();
-	const FVector2D SpawnLocation = GraphEditor->GetPasteLocation();
+	const FVector2D SpawnLocation = FVector2D(FBAUtils::GetGraphEditorPasteLocation(GraphEditor));
 
 	GraphHandler->SetNodeToReplace(nullptr, nullptr);
 

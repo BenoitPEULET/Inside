@@ -3,8 +3,10 @@
 #include "BlueprintAssistSettings.h"
 #include "BlueprintAssistSettings_EditorFeatures.h"
 #include "BlueprintAssistUtils.h"
+#include "ISettingsEditorModule.h"
 #include "BlueprintAssistMisc/BAMiscUtils.h"
 #include "EdGraph/EdGraph.h"
+#include "Modules/ModuleManager.h"
 
 void FBAGraphPinHandle::SetPin(UEdGraphPin* Pin)
 {
@@ -31,6 +33,11 @@ UEdGraphPin* FBAGraphPinHandle::GetPin(bool bFallbackOnPinName)
 
 	for (auto Node : Graph->Nodes)
 	{
+		if (!Node)
+		{
+			continue;
+		}
+
 		if (Node->NodeGuid == NodeGuid)
 		{
 			for (UEdGraphPin* Pin : Node->Pins)
@@ -73,7 +80,7 @@ void FBANodePinHandle::SetPin(UEdGraphPin* Pin)
 	if (Pin)
 	{
 		PinId = Pin->PinId;
-		Node = Pin->GetOwningNode();
+		Node = Pin->GetOwningNodeUnchecked();
 		PinType = Pin->PinType;
 		PinName = Pin->PinName;
 	}
@@ -180,7 +187,7 @@ void FBANodeArray::CacheNodes()
 void FBASettingsPropertyHook::NotifyPreChange(FProperty* PropertyAboutToChange)
 {
 	FNotifyHook::NotifyPreChange(PropertyAboutToChange);
-	if (UClass* OwnerClass = PropertyAboutToChange->GetOwner<UClass>())
+	if (UClass* OwnerClass = PropertyAboutToChange->GetOwnerClass())
 	{
 		if (UObject* CDO = OwnerClass->GetDefaultObject())
 		{
@@ -193,12 +200,24 @@ void FBASettingsPropertyHook::NotifyPreChange(FProperty* PropertyAboutToChange)
 
 void FBASettingsPropertyHook::NotifyPostChange(const FPropertyChangedEvent& PropertyChangedEvent, FProperty* PropertyThatChanged)
 {
-	if (UClass* OwnerClass = PropertyThatChanged->GetOwner<UClass>())
+	// See SSettingsEditor::NotifyPostChange
+	if (PropertyChangedEvent.GetNumObjectsBeingEdited() > 0)
 	{
-		if (UObject* CDO = OwnerClass->GetDefaultObject())
+		if (UObject* ObjectBeingEdited = const_cast<UObject*>(PropertyChangedEvent.GetObjectBeingEdited(0)))
 		{
-			CDO->PostEditChange();
-			CDO->SaveConfig();
+			ObjectBeingEdited->PostEditChange();
+			ObjectBeingEdited->SaveConfig();
+
+			static const FName ConfigRestartRequiredKey = "ConfigRestartRequired";
+			const bool bShowRestartEditor = PropertyChangedEvent.Property->GetBoolMetaData(ConfigRestartRequiredKey) || (PropertyChangedEvent.MemberProperty && PropertyChangedEvent.MemberProperty->GetBoolMetaData(ConfigRestartRequiredKey));
+			if (bShowRestartEditor)
+			{
+				ISettingsEditorModule* SettingsEditorModule = static_cast<ISettingsEditorModule*>(FModuleManager::Get().LoadModule("SettingsEditor"));
+				if (SettingsEditorModule)
+				{
+					SettingsEditorModule->OnApplicationRestartRequired();
+				}
+			}
 		}
 	}
 }

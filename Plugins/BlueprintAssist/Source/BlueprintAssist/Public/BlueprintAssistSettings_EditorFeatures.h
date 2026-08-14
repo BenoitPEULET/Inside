@@ -34,6 +34,155 @@ enum class EBAPinSelectionMethod : uint8
 	Value UMETA(DisplayName = "Value"),
 };
 
+USTRUCT()
+struct FBAVariableDefaults
+{
+	GENERATED_BODY()
+
+	FBAVariableDefaults();
+
+	/* Variable default Private */
+	UPROPERTY(EditAnywhere, config, Category = VariableDefaults)
+	bool bDefaultVariablePrivate;
+
+	/* Variable default Instance Editable */
+	UPROPERTY(EditAnywhere, config, Category = VariableDefaults)
+	bool bDefaultVariableInstanceEditable;
+
+	/* Variable default Blueprint Read Only */
+	UPROPERTY(EditAnywhere, config, Category = VariableDefaults)
+	bool bDefaultVariableBlueprintReadOnly;
+
+	/* Variable default Expose on Spawn */
+	UPROPERTY(EditAnywhere, config, Category = VariableDefaults)
+	bool bDefaultVariableExposeOnSpawn;
+
+	/* Variable default Expose to Cinematics */
+	UPROPERTY(EditAnywhere, config, Category = VariableDefaults)
+	bool bDefaultVariableExposeToCinematics;
+
+	/* Variable default Transient */
+	UPROPERTY(EditAnywhere, config, Category = VariableDefaults)
+	bool bDefaultVariableTransient;
+
+	/* Variable default Save Game */
+	UPROPERTY(EditAnywhere, config, Category = VariableDefaults)
+	bool bDefaultVariableSaveGame;
+
+	/* Variable default Advanced Display */
+	UPROPERTY(EditAnywhere, config, Category = VariableDefaults)
+	bool bDefaultVariableAdvancedDisplay;
+
+	/* Variable default Config Variable */
+	UPROPERTY(EditAnywhere, config, Category = VariableDefaults)
+	bool bDefaultConfigVariable;
+
+	/* Variable default Name */
+	UPROPERTY(EditAnywhere, config, Category = VariableDefaults)
+	FString DefaultVariableName;
+
+	/* Variable default Tooltip */
+	UPROPERTY(EditAnywhere, config, Category = VariableDefaults)
+	FText DefaultVariableTooltip;
+
+	/* Variable default Category */
+	UPROPERTY(EditAnywhere, config, Category = VariableDefaults)
+	FText DefaultVariableCategory;
+
+	/* Should these defaults apply to event dispatchers? */
+	UPROPERTY(EditAnywhere, config, Category = VariableDefaults)
+	bool bApplyVariableDefaultsToEventDispatchers;
+};
+
+USTRUCT()
+struct FBAFunctionDefaults
+{
+	GENERATED_BODY()
+
+	FBAFunctionDefaults();
+
+	/* Function default AccessSpecifier */
+	UPROPERTY(EditAnywhere, config, Category = FunctionDefaults)
+	EBAFunctionAccessSpecifier DefaultFunctionAccessSpecifier;
+
+	/* Function default Pure */
+	UPROPERTY(EditAnywhere, config, Category = FunctionDefaults)
+	bool bDefaultFunctionPure;
+	
+	/* Function default Const */
+	UPROPERTY(EditAnywhere, config, Category = FunctionDefaults)
+	bool bDefaultFunctionConst;
+
+	/* Function default Exec */
+	UPROPERTY(EditAnywhere, config, Category = FunctionDefaults)
+	bool bDefaultFunctionExec;
+
+	/* Function default ThreadSafe */
+	UPROPERTY(EditAnywhere, config, Category = FunctionDefaults)
+	bool bDefaultFunctionThreadSafe;
+
+	/* Function default Tooltip */
+	UPROPERTY(EditAnywhere, config, Category = FunctionDefaults)
+	FText DefaultFunctionTooltip;
+
+	/* Function default Keywords */
+	UPROPERTY(EditAnywhere, config, Category = FunctionDefaults)
+	FText DefaultFunctionKeywords;
+
+	/* Function default Category */
+	UPROPERTY(EditAnywhere, config, Category = FunctionDefaults)
+	FText DefaultFunctionCategory;
+};
+
+USTRUCT()
+struct FBACustomEventDefaults
+{
+	GENERATED_BODY()
+
+	FBACustomEventDefaults();
+
+	/* Event default AccessSpecifier */
+	UPROPERTY(EditAnywhere, config, Category = CustomEventDefaults)
+	EBAFunctionAccessSpecifier DefaultEventAccessSpecifier;
+
+	/* Event default Net Reliable (for RPC calls) */
+	UPROPERTY(EditAnywhere, config, Category = CustomEventDefaults)
+	bool bDefaultEventNetReliable;
+};
+
+UENUM()
+enum class EBAAffixType : uint8
+{
+	Prefix UMETA(DisplayName = "Prefix", Tooltip = "At the start"),
+	Suffix UMETA(DisplayName = "Suffix", Tooltip = "At the end"),
+};
+
+USTRUCT()
+struct FBAStringAffix
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, config, Category = Default)
+	FString AffixValue;
+
+	UPROPERTY(EditAnywhere, config, Category = Default)
+	EBAAffixType AffixType = EBAAffixType::Prefix;
+
+	bool Matches(const FString& String) const
+	{
+		return (AffixType == EBAAffixType::Prefix) ? String.StartsWith(AffixValue) : String.EndsWith(AffixValue);
+	}
+
+	void AddAffix(FString& String) const
+	{
+		String = (AffixType == EBAAffixType::Prefix) ? (AffixValue + String) : (String + AffixValue);
+	}
+
+	bool RemoveAffix(FString& String) const
+	{
+		return (AffixType == EBAAffixType::Prefix) ? String.RemoveFromStart(AffixValue) : String.RemoveFromEnd(AffixValue);
+	}
+};
 
 UCLASS(Config = EditorPerProjectUserSettings)
 class BLUEPRINTASSIST_API UBASettings_EditorFeatures final : public UBASettingsBase
@@ -47,26 +196,26 @@ public:
 	/// CustomEventReplication
 	////////////////////////////////////////////////////////////
 
-	/* Set the according replication flags after renaming a custom event by matching the prefixes below */
+	/* Set the according replication flags after renaming a custom event by matching the affixes below */
 	UPROPERTY(EditAnywhere, Config, Category = CustomEventReplication)
 	bool bSetReplicationFlagsAfterRenaming;
 
-	/* When enabled, renaming a custom event with no matching prefix will apply "NotReplicated" */
+	/* If there is no matching affix in the title, apply "NotReplicated" */
 	UPROPERTY(EditAnywhere, Config, Category = CustomEventReplication, meta=(EditCondition="bSetReplicationFlagsAfterRenaming"))
-	bool bClearReplicationFlagsWhenRenamingWithNoPrefix;
+	bool bClearReplicationFlagsWhenRenaming;
 
-	/* Add the according prefix to the title after changing replication flags */
+	/* Add the according affix to the title after changing replication flags */
 	UPROPERTY(EditAnywhere, Config, Category = CustomEventReplication)
-	bool bAddReplicationPrefixToCustomEventTitle;
-
-	UPROPERTY(EditAnywhere, Config, Category = CustomEventReplication)
-	FString MulticastPrefix;
+	bool bAddReplicationAffixToCustomEventTitle;
 
 	UPROPERTY(EditAnywhere, Config, Category = CustomEventReplication)
-	FString ServerPrefix;
+	FBAStringAffix MulticastAffix;
 
 	UPROPERTY(EditAnywhere, Config, Category = CustomEventReplication)
-	FString ClientPrefix;
+	FBAStringAffix ServerAffix;
+
+	UPROPERTY(EditAnywhere, Config, Category = CustomEventReplication)
+	FBAStringAffix ClientAffix;
 
 	////////////////////////////////////////////////////////////
 	/// Node group
@@ -181,75 +330,27 @@ public:
 	bool bEnableVariableDefaults;
 
 	UPROPERTY(EditAnywhere, config, Category = VariableDefaults, meta = (EditCondition = "bEnableVariableDefaults"))
-	bool bApplyVariableDefaultsToEventDispatchers;
+	FBAVariableDefaults VariableDefaults;
 
-	/* Variable default Instance Editable */
-	UPROPERTY(EditAnywhere, config, Category = VariableDefaults, meta = (EditCondition = "bEnableVariableDefaults"))
-	bool bDefaultVariableInstanceEditable;
-
-	/* Variable default Blueprint Read Only */
-	UPROPERTY(EditAnywhere, config, Category = VariableDefaults, meta = (EditCondition = "bEnableVariableDefaults"))
-	bool bDefaultVariableBlueprintReadOnly;
-
-	/* Variable default Expose on Spawn */
-	UPROPERTY(EditAnywhere, config, Category = VariableDefaults, meta = (EditCondition = "bEnableVariableDefaults"))
-	bool bDefaultVariableExposeOnSpawn;
-
-	/* Variable default Private */
-	UPROPERTY(EditAnywhere, config, Category = VariableDefaults, meta = (EditCondition = "bEnableVariableDefaults"))
-	bool bDefaultVariablePrivate;
-
-	/* Variable default Expose to Cinematics */
-	UPROPERTY(EditAnywhere, config, Category = VariableDefaults, meta = (EditCondition = "bEnableVariableDefaults"))
-	bool bDefaultVariableExposeToCinematics;
-
-	/* Variable default name */
-	UPROPERTY(EditAnywhere, config, Category = VariableDefaults, meta = (EditCondition = "bEnableVariableDefaults"))
-	FString DefaultVariableName;
-
-	/* Variable default Tooltip */
-	UPROPERTY(EditAnywhere, config, Category = VariableDefaults, meta = (EditCondition = "bEnableVariableDefaults"))
-	FText DefaultVariableTooltip;
-
-	/* Variable default Category */
-	UPROPERTY(EditAnywhere, config, Category = VariableDefaults, meta = (EditCondition = "bEnableVariableDefaults"))
-	FText DefaultVariableCategory;
+	/* When holding down this key while you create a new variable, these defaults will apply */
+	UPROPERTY(EditAnywhere, config, Category = VariableDefaults)
+	TMap<FKey, FBAVariableDefaults> VariableDefaultsHotkeys;
 
 	////////////////////////////////////////////////////////////
-	// Create function defaults
+	// Function defaults
 	////////////////////////////////////////////////////////////
 
 	/* Set default properties on functions when they are created */
 	UPROPERTY(EditAnywhere, config, Category = FunctionDefaults)
 	bool bEnableFunctionDefaults;
 
-	/* Function default AccessSpecifier */
+	/* Function defaults */
 	UPROPERTY(EditAnywhere, config, Category = FunctionDefaults, meta = (EditCondition = "bEnableFunctionDefaults"))
-	EBAFunctionAccessSpecifier DefaultFunctionAccessSpecifier;
+	FBAFunctionDefaults FunctionDefaults;
 
-	/* Function default Pure */
-	UPROPERTY(EditAnywhere, config, Category = FunctionDefaults, meta = (EditCondition = "bEnableFunctionDefaults"))
-	bool bDefaultFunctionPure;
-	
-	/* Function default Const */
-	UPROPERTY(EditAnywhere, config, Category = FunctionDefaults, meta = (EditCondition = "bEnableFunctionDefaults"))
-	bool bDefaultFunctionConst;
-
-	/* Function default Exec */
-	UPROPERTY(EditAnywhere, config, Category = FunctionDefaults, meta = (EditCondition = "bEnableFunctionDefaults"))
-	bool bDefaultFunctionExec;
-
-	/* Function default Tooltip */
-	UPROPERTY(EditAnywhere, config, Category = FunctionDefaults, meta = (EditCondition = "bEnableFunctionDefaults"))
-	FText DefaultFunctionTooltip;
-
-	/* Function default Keywords */
-	UPROPERTY(EditAnywhere, config, Category = FunctionDefaults, meta = (EditCondition = "bEnableFunctionDefaults"))
-	FText DefaultFunctionKeywords;
-
-	/* Function default Category */
-	UPROPERTY(EditAnywhere, config, Category = FunctionDefaults, meta = (EditCondition = "bEnableFunctionDefaults"))
-	FText DefaultFunctionCategory;
+	/* When holding down this key while you create a new function, these defaults will apply */
+	UPROPERTY(EditAnywhere, config, Category = FunctionDefaults)
+	TMap<FKey, FBAFunctionDefaults> FunctionDefaultsHotkeys;
 
 	////////////////////////////////////////////////////////////
 	// Custom event defaults
@@ -257,15 +358,14 @@ public:
 
 	/* Set default properties on custom events when they are created */
 	UPROPERTY(EditAnywhere, config, Category = CustomEventDefaults)
-	bool bEnableEventDefaults;
+	bool bEnableCustomEventDefaults;
 
-	/* Event default AccessSpecifier */
-	UPROPERTY(EditAnywhere, config, Category = CustomEventDefaults, meta = (EditCondition = "bEnableEventDefaults"))
-	EBAFunctionAccessSpecifier DefaultEventAccessSpecifier;
+	UPROPERTY(EditAnywhere, config, Category = CustomEventDefaults, meta = (EditCondition = "bEnableCustomEventDefaults"))
+	FBACustomEventDefaults CustomEventDefaults;
 
-	/* Event default Net Reliable (for RPC calls) */
-	UPROPERTY(EditAnywhere, config, Category = CustomEventDefaults, meta = (EditCondition = "bEnableEventDefaults"))
-	bool bDefaultEventNetReliable;
+	/* When holding down this key while you create a new custom event, these defaults will apply */
+	UPROPERTY(EditAnywhere, config, Category = CustomEventDefaults)
+	TMap<FKey, FBACustomEventDefaults> CustomEventDefaultsHotkeys;
 
 	////////////////////////////////////////////////////////////
 	// Inputs

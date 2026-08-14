@@ -5,6 +5,7 @@
 #include "BlueprintAssistGraphHandler.h"
 #include "BlueprintAssistStyle.h"
 #include "RenderingThread.h"
+#include "SlateOptMacros.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "Slate/WidgetRenderer.h"
 #include "Widgets/Images/SImage.h"
@@ -12,6 +13,7 @@
 #include "Widgets/Layout/SSpacer.h"
 #include "Widgets/Notifications/SProgressBar.h"
 
+BEGIN_SLATE_FUNCTION_BUILD_OPTIMIZATION
 void SBASizeProgress::Construct(const FArguments& InArgs, TSharedPtr<FBAGraphHandler> InOwnerGraphHandler)
 {
 	OwnerGraphHandler = InOwnerGraphHandler;
@@ -69,6 +71,7 @@ void SBASizeProgress::Construct(const FArguments& InArgs, TSharedPtr<FBAGraphHan
 
 	SetVisibility(EVisibility::Collapsed);
 }
+END_SLATE_FUNCTION_BUILD_OPTIMIZATION
 
 SBASizeProgress::~SBASizeProgress()
 {

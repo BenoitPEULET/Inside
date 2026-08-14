@@ -2,6 +2,7 @@
 
 #include "BlueprintAssistModule.h"
 
+#include "BASettings_Meta.h"
 #include "BlueprintAssistCache.h"
 #include "BlueprintAssistCommands.h"
 #include "BlueprintAssistGlobals.h"
@@ -19,12 +20,15 @@
 #include "PropertyEditorModule.h"
 #include "WorkspaceMenuStructure.h"
 #include "WorkspaceMenuStructureModule.h"
+#include "BlueprintAssistMisc/BACrashReporter.h"
 #include "BlueprintAssistObjects/BARootObject.h"
 #include "BlueprintAssistWidgets/BADebugMenu.h"
 #include "BlueprintAssistWidgets/BASettingsChangeWindow.h"
+#include "BlueprintAssistWidgets/BAConfigViewer.h"
 #include "BlueprintAssistWidgets/BAWelcomeScreen.h"
 #include "Developer/Settings/Public/ISettingsModule.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Interfaces/IMainFrameModule.h"
 #include "Modules/ModuleManager.h"
 
 #if WITH_EDITOR
@@ -57,7 +61,9 @@ void FBlueprintAssistModule::StartupModule()
 		return;
 	}
 
-	FCoreDelegates::OnPostEngineInit.AddRaw(this, &FBlueprintAssistModule::OnPostEngineInit);
+	FCoreDelegates::GetOnPostEngineInit().AddRaw(this, &FBlueprintAssistModule::OnPostEngineInit);
+
+	IMainFrameModule::Get().OnMainFrameCreationFinished().AddRaw(this, &FBlueprintAssistModule::OnMainFrameCreationFinished);
 #endif
 }
 
@@ -112,18 +118,29 @@ void FBlueprintAssistModule::OnPostEngineInit()
 		.SetIcon(FSlateIcon("EditorStyle", "Icons.Help"))
 		.SetTooltipText(INVTEXT("Opens the Blueprint Assist Welcome Screen"));
 
-	if (UBASettings_EditorFeatures::Get().bShowWelcomeScreenOnLaunch)
-	{
-		FGlobalTabmanager::Get()->TryInvokeTab(SBAWelcomeScreen::GetTabId());
-	}
-
 	FGlobalTabmanager::Get()->RegisterNomadTabSpawner(SBASettingsChangeWindow::GetTabId(), FOnSpawnTab::CreateStatic(&SBASettingsChangeWindow::CreateTab))
 		.SetGroup(WorkspaceMenu::GetMenuStructure().GetToolsCategory())
 		.SetDisplayName(INVTEXT("BA Settings Changes"))
 		.SetIcon(FSlateIcon("EditorStyle", "Icons.Help"))
-		.SetTooltipText(INVTEXT("Opens a window where you can see the changes for Blueprint Assist settings"));
+		.SetTooltipText(INVTEXT("View any changes you have made from the default Blueprint Assist settings"));
+
+	FGlobalTabmanager::Get()->RegisterNomadTabSpawner(SBAConfigViewer::GetTabId(), FOnSpawnTab::CreateStatic(&SBAConfigViewer::CreateTab))
+		.SetGroup(WorkspaceMenu::GetMenuStructure().GetToolsCategory())
+		.SetDisplayName(INVTEXT("BA Config Viewer"))
+		.SetIcon(FSlateIcon("EditorStyle", "Icons.Help"))
+		.SetTooltipText(INVTEXT("View config settings and which ini files they exist in"));
 
 	UE_LOG(LogBlueprintAssist, Log, TEXT("Finished loaded BlueprintAssist Module"));
+}
+
+void FBlueprintAssistModule::OnMainFrameCreationFinished(TSharedPtr<SWindow> InRootWindow, bool bIsRunningStartupDialog)
+{
+	FBACrashReporter::Get().Init();
+
+	if (UBASettings_EditorFeatures::Get().bShowWelcomeScreenOnLaunch)
+	{
+		FGlobalTabmanager::Get()->TryInvokeTab(SBAWelcomeScreen::GetTabId());
+	}
 }
 
 void FBlueprintAssistModule::ShutdownModule()
@@ -139,6 +156,8 @@ void FBlueprintAssistModule::ShutdownModule()
 	FBAInputProcessor::Get().Cleanup();
 
 	FBAToolbar::Get().Cleanup();
+
+	FBACache::Get().Cleanup();
 
 	if (RootObject.IsValid())
 	{
@@ -178,7 +197,8 @@ void FBlueprintAssistModule::ShutdownModule()
 
 	FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(SBAWelcomeScreen::GetTabId());
 
-	FCoreDelegates::OnPostEngineInit.RemoveAll(this);
+	FCoreDelegates::GetOnPostEngineInit().RemoveAll(this);
+	IMainFrameModule::Get().OnMainFrameCreationFinished().RemoveAll(this);
 
 	FBAStyle::Shutdown();
 
@@ -261,6 +281,15 @@ void FBlueprintAssistModule::RegisterSettings()
 		INVTEXT("Configure the Blueprint Assist advanced settings"),
 		GetMutableDefault<UBASettings_Advanced>()
 	);
+
+	const FString& Path = FConfigCacheIni::NormalizeConfigIniPath(UBASettings_Meta::Get().CustomSettingsIniPath.FilePath);
+	if (FPaths::FileExists(Path))
+	{
+		UBASettings::GetMutable().LoadConfig(nullptr, *Path);
+		UBASettings_EditorFeatures::GetMutable().LoadConfig(nullptr, *Path);
+		UBASettings_Advanced::GetMutable().LoadConfig(nullptr, *Path);
+		UE_LOG(LogBlueprintAssist, Log, TEXT("Loaded custom settings from file: %s"), *Path)
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

@@ -110,7 +110,7 @@ struct FBAFormatterSettings
 	EBAAutoFormatting AutoFormatting = EBAAutoFormatting::Never;
 
 	/* Direction of execution flow in this graph */
-	UPROPERTY(EditAnywhere, config, Category=FormatterSettings, meta = (EditCondition = "bEnabled"))
+	UPROPERTY(EditAnywhere, config, Category=FormatterSettings, meta = (EditCondition = "bEnabled && (FormatterType == EBAFormatterType::Simple)"))
 	TEnumAsByte<EEdGraphPinDirection> FormatterDirection;
 
 	/* Names of any root nodes that this graph uses */
@@ -342,6 +342,10 @@ public:
 
 	UPROPERTY(EditAnywhere, config, Category = OtherGraphs)
 	TMap<FName, FBAFormatterSettings> NonBlueprintFormatterSettings;
+
+	/* Extra padding to add between branches */
+	UPROPERTY(EditAnywhere, config, Category = BehaviorTree)
+	float BehaviorTreeBranchExtraPadding;
 
 	////////////////////////////////////////////////////////////
 	// Comment Settings

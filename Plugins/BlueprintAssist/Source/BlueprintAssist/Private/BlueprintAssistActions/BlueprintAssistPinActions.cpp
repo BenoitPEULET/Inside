@@ -45,6 +45,32 @@ bool FBAPinActionsBase::HasHoveredOrSelectedPin() const
 	return HasHoveredPin() || HasSelectedPin();
 }
 
+bool FBAPinActionsBase::HasHoveredPinLink() const
+{
+	if (HasGraphNonReadOnly())
+	{
+		FPinLink HoveredPinLink = FBAUtils::GetHoveredPinLink(GetGraphHandler()->GetGraphPanel());
+		return HoveredPinLink.HasBothPins();
+	}
+
+	return false;
+}
+
+UEdGraphPin* FBAPinActionsBase::GetHoveredOrSelectedPin(TSharedPtr<FBAGraphHandler> GraphHandler)
+{
+	if (UEdGraphPin* Hov = FBAUtils::GetHoveredPin(GraphHandler->GetGraphPanel()))
+	{
+		return Hov;
+	}
+
+	if (UEdGraphPin* Sel = GraphHandler->GetSelectedPin())
+	{
+		return Sel;
+	}
+
+	return nullptr; 
+}
+
 void FBAPinActions::Init()
 {
 	PinCommands = MakeShareable(new FUICommandList());
@@ -79,6 +105,12 @@ void FBAPinActions::Init()
 	);
 
 	PinCommands->MapAction(
+		FBACommands::Get().StraightenHoveredPin,
+		FExecuteAction::CreateRaw(this, &FBAPinActions::StraightenHoveredPin),
+		FCanExecuteAction::CreateRaw(this, &FBAPinActions::HasHoveredOrSelectedPin)
+	);
+
+	PinCommands->MapAction(
 		FBACommands::Get().LinkPinMenu,
 		FExecuteAction::CreateRaw(this, &FBAPinActions::OpenPinLinkMenu),
 		FCanExecuteAction::CreateRaw(this, &FBAPinActions::HasSelectedPin)
@@ -100,7 +132,10 @@ void FBAPinActions::Init()
 	PinCommands->MapAction(
 		FBACommands::Get().DisconnectPinLink,
 		FExecuteAction::CreateRaw(this, &FBAPinActions::DisconnectPinOrWire),
-		FCanExecuteAction::CreateRaw(this, &FBAPinActions::HasHoveredOrSelectedPin)
+		FCanExecuteAction::CreateLambda([this]()
+		{
+			return HasHoveredPinLink() || HasHoveredOrSelectedPin();
+		})
 	);
 
 	PinCommands->MapAction(
@@ -154,6 +189,23 @@ void FBAPinActions::LinkToHoveredPin()
 				FBAUtils::TryCreateConnectionUnsafe(SelectedPin, HoveredPin->GetPinObj(), EBABreakMethod::Default);
 			}
 		}
+	}
+}
+
+void FBAPinActions::StraightenHoveredPin()
+{
+	FScopedTransaction Transaction(INVTEXT("Straighten Hovered Pin"));
+	TSharedPtr<FBAGraphHandler> GraphHandler = GetGraphHandlerChecked();
+	UEdGraphPin* Pin = GetHoveredOrSelectedPin(GraphHandler);
+	if (!Pin)
+	{
+		return;
+	}
+
+	for (UEdGraphPin* LinkedTo : Pin->LinkedTo)
+	{
+		LinkedTo->Modify();
+		FBAUtils::StraightenPin(GraphHandler, Pin, LinkedTo);
 	}
 }
 

@@ -149,6 +149,11 @@ void FBACache::DeleteCache()
 	}
 }
 
+void FBACache::Cleanup()
+{
+	FCoreDelegates::OnPreExit.RemoveAll(this);
+}
+
 void FBACache::CleanupFiles()
 {
 	// Get all assets
@@ -349,6 +354,11 @@ void FBAGraphData::CleanupGraph(UEdGraph* Graph)
 	TSet<FGuid> CurrentNodes;
 	for (UEdGraphNode* Node : Graph->Nodes)
 	{
+		if (!Node)
+		{
+			continue;
+		}
+
 		// Collect all node guids from the graph
 		CurrentNodes.Add(FBAUtils::GetNodeGuid(Node));
 

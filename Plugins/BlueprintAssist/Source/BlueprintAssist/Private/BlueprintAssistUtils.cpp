@@ -11,6 +11,7 @@
 #include "BlueprintAssistStats.h"
 #include "BlueprintAssistTabHandler.h"
 #include "BlueprintEditor.h"
+#include "EdGraphUtilities.h"
 #include "K2Node_CallFunction.h"
 #include "K2Node_CustomEvent.h"
 #include "K2Node_InputAction.h"
@@ -330,7 +331,7 @@ FSlateRect FBAUtils::GetNodeBounds(TSharedPtr<SGraphNode> GraphNode)
 {
 	if (GraphNode)
 	{
-		return FSlateRect::FromPointAndExtent(GraphNode->GetPosition(), GraphNode->GetDesiredSize());
+		return FSlateRect::FromPointAndExtent(FBAUtils::GetGraphNodePos(GraphNode), GraphNode->GetDesiredSize());
 	}
 
 	return FSlateRect();
@@ -792,9 +793,21 @@ bool FBAUtils::IsExecOrDelegatePin(const UEdGraphPin* Pin)
 
 	if (UBASettings::Get().bTreatDelegatesAsExecutionPins)
 	{
-		if (IsDelegatePinLinkedToCustomEvent(Pin))
+		if (UK2Node_Knot* KnotDelegate = Cast<UK2Node_Knot>(Pin->GetOwningNodeUnchecked()))
 		{
-			return true;
+			// if it is a delegate knot pin, check both the input and output
+			if (IsDelegatePinLinkedToCustomEvent(KnotDelegate->GetInputPin()) ||
+				IsDelegatePinLinkedToCustomEvent(KnotDelegate->GetOutputPin()))
+			{
+				return true;
+			}
+		}
+		else
+		{
+			if (IsDelegatePinLinkedToCustomEvent(Pin))
+			{
+				return true;
+			}
 		}
 	}
 
@@ -993,10 +1006,23 @@ bool FBAUtils::IsLoopingPinLink(FPinLink& PinLink, EEdGraphPinDirection Directio
 
 UEdGraphNode* FBAUtils::GetExecutingNode(UEdGraphNode* Node)
 {
+	TSet<UEdGraphNode*> Visited;
+	return GetExecutingNode_Impl(Node, Visited);
+}
+
+UEdGraphNode* FBAUtils::GetExecutingNode_Impl(UEdGraphNode* Node, TSet<UEdGraphNode*> Visited)
+{
 	if (FBAUtils::IsNodeImpure(Node))
 	{
 		return Node;
 	}
+
+	if (Visited.Contains(Node))
+	{
+		return nullptr;
+	}
+
+	Visited.Add(Node);
 
 	const TArray<UEdGraphNode*> LinkedOutNodes = FBAUtils::GetLinkedNodes(Node, EGPD_Output);
 	const TArray<UEdGraphNode*> LinkedPureNodes = LinkedOutNodes.FilterByPredicate(IsNodeImpure);
@@ -1007,7 +1033,7 @@ UEdGraphNode* FBAUtils::GetExecutingNode(UEdGraphNode* Node)
 
 	for (UEdGraphNode* OutNode : LinkedOutNodes.FilterByPredicate(IsNodePure))
 	{
-		if (UEdGraphNode* ExecutingNode = GetExecutingNode(OutNode))
+		if (UEdGraphNode* ExecutingNode = GetExecutingNode_Impl(OutNode, Visited))
 		{
 			return ExecutingNode;
 		}
@@ -1019,6 +1045,11 @@ UEdGraphNode* FBAUtils::GetExecutingNode(UEdGraphNode* Node)
 TSet<UEdGraphNode*> FBAUtils::GetNodeTreeWithFilter(UEdGraphNode* InitialNode, TFunctionRef<bool(UEdGraphPin*)> Pred, EEdGraphPinDirection Direction, bool bOnlyInitialDirection)
 {
 	TSet<UEdGraphNode*> NodeTree;
+	if (!InitialNode)
+	{
+		return NodeTree;
+	}
+
 	TSet<UEdGraphNode*> VisitedNodes;
 	VisitedNodes.Add(InitialNode);
 	TQueue<UEdGraphNode*> NodeQueue;
@@ -1187,6 +1218,11 @@ TSet<UEdGraphNode*> FBAUtils::GetExecTree(UEdGraphNode* Node, EEdGraphPinDirecti
 TSet<UEdGraphNode*> FBAUtils::GetExecutionTreeWithFilter(UEdGraphNode* InitialNode, TFunctionRef<bool(UEdGraphNode*)> Pred, EEdGraphPinDirection Direction, bool bOnlyInitialDirection)
 {
 	TSet<UEdGraphNode*> NodeTree;
+	if (!InitialNode)
+	{
+		return NodeTree;
+	}
+
 	TSet<UEdGraphNode*> VisitedNodes;
 	VisitedNodes.Add(InitialNode);
 	TQueue<UEdGraphNode*> NodeQueue;
@@ -1431,6 +1467,11 @@ void FBAUtils::PrintNodeArray(const TArray<UEdGraphNode*>& Nodes, const FString&
 
 bool FBAUtils::IsKnotNode(UEdGraphNode* Node)
 {
+	if (!Node)
+	{
+		return false;
+	}
+
 	if (Node->IsA(UK2Node_Knot::StaticClass()))
 	{
 		return true;
@@ -1796,7 +1837,15 @@ FString FBAUtils::GraphTypeToString(const EGraphType GraphType)
 
 EGraphType FBAUtils::GetGraphType(UEdGraph* Graph)
 {
-	return Graph->GetSchema()->GetGraphType(Graph);
+	if (Graph)
+	{
+		if (const UEdGraphSchema* Schema = Graph->GetSchema())
+		{
+			return Schema->GetGraphType(Graph);
+		}
+	}
+
+	return EGraphType::GT_MAX;
 }
 
 bool FBAUtils::IsInputNode(UEdGraphNode* Node)
@@ -1948,6 +1997,16 @@ bool FBAUtils::IsWidgetOfAnyType(TSharedPtr<SWidget> Widget, const TArray<FName>
 	}
 
 	return false;
+}
+
+bool FBAUtils::IsWidgetOfAnyType(TSharedPtr<SWidget> Widget, const TSet<FName>& Types)
+{
+	if (!Widget.IsValid())
+	{
+		return false;
+	}
+
+	return Types.Contains(Widget->GetType());
 }
 
 TSharedPtr<SWidget> FBAUtils::GetChildWidget(
@@ -2169,6 +2228,34 @@ TSharedPtr<SWidget> FBAUtils::GetParentWidgetOfType(
 	return nullptr;
 }
 
+TSharedPtr<SWidget> FBAUtils::GetParentWidgetOfTypeFast(TSharedPtr<SWidget> Widget, const FName& ParentType)
+{
+	if (!Widget.IsValid())
+	{
+		return nullptr;
+	}
+
+	if (IsWidgetOfTypeFast(Widget, ParentType))
+	{
+		return Widget;
+	}
+
+	if (!Widget->IsParentValid())
+	{
+		return nullptr;
+	}
+
+	check(Widget->GetParentWidget() != Widget)
+
+	TSharedPtr<SWidget> ReturnWidget = GetParentWidgetOfTypeFast(Widget->GetParentWidget(), ParentType);
+	if (ReturnWidget.IsValid())
+	{
+		return ReturnWidget;
+	}
+
+	return nullptr;
+}
+
 TSharedPtr<SWidget> FBAUtils::ScanParentContainersForTypes(TSharedPtr<SWidget> Widget, const TArray<FName>& Types, const FName& StopAtParent)
 {
 	struct FLocal
@@ -2249,6 +2336,22 @@ TSharedPtr<SGraphNode> FBAUtils::GetGraphNode(
 	return nullptr;
 }
 
+TSharedPtr<SGraphNode> FBAUtils::GetGraphNodeFast(TSharedPtr<SGraphPanel> GraphPanel, UEdGraphNode* Node)
+{
+	if (Node == nullptr || !GraphPanel.IsValid())
+	{
+		return nullptr;
+	}
+
+	TSharedPtr<SGraphNode> GraphNode_GUID = GraphPanel->GetNodeWidgetFromGuid(Node->NodeGuid);
+	if (GraphNode_GUID.IsValid())
+	{
+		return GraphNode_GUID;
+	}
+
+	return nullptr;
+}
+
 TSharedPtr<SCommentBubble> FBAUtils::GetCommentBubble(TSharedPtr<SGraphNode> GraphNode)
 {
 	if (SNodePanel::SNode::FNodeSlot* CommentSlot = GraphNode->GetSlot(ENodeZone::TopCenter))
@@ -2267,6 +2370,27 @@ TSharedPtr<SGraphPin> FBAUtils::GetGraphPin(TSharedPtr<SGraphPanel> GraphPanel, 
 	}
 
 	TSharedPtr<SGraphNode> GraphNode = GetGraphNode(GraphPanel, Pin->GetOwningNode());
+	return GraphNode.IsValid() ? GraphNode->FindWidgetForPin(Pin) : nullptr;
+}
+
+TSharedPtr<SGraphPin> FBAUtils::GetGraphPin(TSharedPtr<SGraphNode> GraphNode, UEdGraphPin* Pin)
+{
+	if (!GraphNode.IsValid() || !IsValidPin(Pin))
+	{
+		return nullptr;
+	}
+
+	return GraphNode.IsValid() ? GraphNode->FindWidgetForPin(Pin) : nullptr;
+}
+
+TSharedPtr<SGraphPin> FBAUtils::GetGraphPinFast(TSharedPtr<SGraphPanel> GraphPanel, UEdGraphPin* Pin)
+{
+	if (!IsValidPin(Pin) || !GraphPanel.IsValid())
+	{
+		return nullptr;
+	}
+
+	TSharedPtr<SGraphNode> GraphNode = GetGraphNodeFast(GraphPanel, Pin->GetOwningNode());
 	return GraphNode.IsValid() ? GraphNode->FindWidgetForPin(Pin) : nullptr;
 }
 
@@ -2296,133 +2420,56 @@ TSharedPtr<SGraphPanel> FBAUtils::GetHoveredGraphPanel()
 
 TSharedPtr<SGraphPin> FBAUtils::GetHoveredGraphPin(TSharedPtr<SGraphPanel> GraphPanel)
 {
-	if (!GraphPanel.IsValid())
+	TSharedPtr<SGraphNode> HoveredNode = GetHoveredGraphNode(GraphPanel);
+	if (!HoveredNode.IsValid())
 	{
 		return nullptr;
 	}
 
-	UEdGraph* Graph = GraphPanel->GetGraphObj();
-	if (Graph == nullptr)
-	{
-		return nullptr;
-	}
+	TSet<TSharedRef<SWidget>> HoveredNodePins;
+	HoveredNode->GetPins(HoveredNodePins);
 
-	const bool bIsMaterialGraph = GetObjectClassName(Graph) == "MaterialGraph";
-	const bool bUseDirectlyHovered = UBASettings_Advanced::Get().bEnableMaterialGraphPinHoverFix && bIsMaterialGraph;
+	FSlateApplication& SlateApp = FSlateApplication::Get();
+	FWidgetPath WidgetPath = SlateApp.LocateWindowUnderMouse(SlateApp.GetCursorPos(), SlateApp.GetInteractiveTopLevelWindows());
 
-	// check if graph pin "IsHovered" function
-	for (UEdGraphNode* Node : Graph->Nodes)
+	for (int i = WidgetPath.Widgets.Num() - 1; i >= 0; --i)
 	{
-		for (UEdGraphPin* Pin : Node->Pins)
+		const TSharedRef<SWidget>& Widget = WidgetPath.Widgets[i].Widget;
+
+		// don't bother checking past the graph panel
+		if (Widget == GraphPanel)
 		{
-			if (!IsPinHidden(Pin))
-			{
-				TSharedPtr<SGraphPin> GraphPin = GetGraphPin(GraphPanel, Pin);
-				if (GraphPin.IsValid())
-				{
-					// TODO: annoying bug where hover state can get locked if the panel is frozen and you move the cursor too fast
-					const bool bIsHovered = bUseDirectlyHovered ? GraphPin->IsDirectlyHovered() : GraphPin->IsHovered();
-					if (bIsHovered)
-					{
-						return GraphPin;
-					}
-				}
-			}
+			return nullptr;
+		}
+
+		if (HoveredNodePins.Contains(Widget))
+		{
+			return StaticCastSharedRef<SGraphPin>(Widget);
 		}
 	}
 
 	return nullptr;
 }
 
-TArray<TSharedPtr<SGraphPin>> FBAUtils::GetHoveredGraphPins(TSharedPtr<SGraphPanel> GraphPanel)
-{
-	TArray<TSharedPtr<SGraphPin>> OutPins;
-	if (!GraphPanel.IsValid())
-	{
-		return OutPins;
-	}
-
-	UEdGraph* Graph = GraphPanel->GetGraphObj();
-	if (Graph == nullptr)
-	{
-		return OutPins;
-	}
-
-	const bool bIsMaterialGraph = GetObjectClassName(Graph) == "MaterialGraph";
-	const bool bUseDirectlyHovered = UBASettings_Advanced::Get().bEnableMaterialGraphPinHoverFix && bIsMaterialGraph;
-
-	// check if graph pin "IsHovered" function
-	for (UEdGraphNode* Node : Graph->Nodes)
-	{
-		for (UEdGraphPin* Pin : Node->Pins)
-		{
-			if (!FBAUtils::IsPinHidden(Pin))
-			{
-				TSharedPtr<SGraphPin> GraphPin = GetGraphPin(GraphPanel, Pin);
-				if (GraphPin.IsValid())
-				{
-					// TODO: annoying bug where hover state can get locked if the panel is frozen and you move the cursor too fast
-					const bool bIsHovered = bUseDirectlyHovered ? GraphPin->IsDirectlyHovered() : GraphPin->IsHovered();
-					if (bIsHovered)
-					{
-						OutPins.Add(GraphPin);
-					}
-				}
-			}
-		}
-	}
-
-	return OutPins;
-}
-
 FPinLink FBAUtils::GetHoveredPinLink(TSharedPtr<SGraphPanel> GraphPanel)
 {
-	TArray<TSharedPtr<SGraphPin>> OutPins;
 	if (!GraphPanel.IsValid())
 	{
 		return FPinLink();
 	}
 
-	UEdGraph* Graph = GraphPanel->GetGraphObj();
-	if (Graph == nullptr)
+	const FGraphSplineOverlapResult& SplineOverlap = GraphPanel->GetPreviousFrameSplineOverlap();
+
+	UEdGraphPin* PinA = nullptr;
+	UEdGraphPin* PinB = nullptr;
+
+	// returns true if both pins are not null
+	if (SplineOverlap.GetPins(*GraphPanel.Get(), PinA, PinB)) 
 	{
-		return FPinLink();
+		return FPinLink(PinA, PinB);
 	}
 
-	UEdGraphPin* FirstPin = nullptr;
-
-	const bool bIsMaterialGraph = GetObjectClassName(Graph) == "MaterialGraph";
-	const bool bUseDirectlyHovered = UBASettings_Advanced::Get().bEnableMaterialGraphPinHoverFix && bIsMaterialGraph;
-
-	// check if graph pin "IsHovered" function
-	for (UEdGraphNode* Node : Graph->Nodes)
-	{
-		for (UEdGraphPin* Pin : Node->Pins)
-		{
-			if (!FBAUtils::IsPinHidden(Pin))
-			{
-				TSharedPtr<SGraphPin> GraphPin = GetGraphPin(GraphPanel, Pin);
-				if (GraphPin.IsValid())
-				{
-					// TODO: annoying bug where hover state can get locked if the panel is frozen and you move the cursor too fast
-					const bool bIsHovered = bUseDirectlyHovered ? GraphPin->IsDirectlyHovered() : GraphPin->IsHovered();
-					if (bIsHovered)
-					{
-						if (!FirstPin)
-						{
-							FirstPin = Pin;
-						}
-						else
-						{
-							return FPinLink(FirstPin, Pin);
-						}
-					}
-				}
-			}
-		}
-	}
-
-	return FPinLink(FirstPin, nullptr);
+	return FPinLink();
 }
 
 UEdGraphPin* FBAUtils::GetHoveredPin(TSharedPtr<SGraphPanel> GraphPanel)
@@ -2448,12 +2495,31 @@ TSharedPtr<SGraphNode> FBAUtils::GetHoveredGraphNode(TSharedPtr<SGraphPanel> Gra
 		return nullptr;
 	}
 
+	// NOTE: Ruling this optimization causing a crash. This could also issues when relying on engine's SNode OnMouseEnter / OnMouseLeave
+	// Perhaps a better optimization is to check the cursor widget path?
+#if 0 // BA_UE_VERSION_OR_LATER(5, 6)
+	if (UBASettings_Advanced::Get().bUsePanelHoveredNode)
+	{
+		if (UEdGraphNode* HoveredNodeObj = Cast<UEdGraphNode>(GraphPanel->GetCurrentHoveredNode()))
+		{
+			return GetGraphNode(GraphPanel, HoveredNodeObj);
+		}
+
+		return nullptr;
+	}
+#endif
+
 	const FVector2D CursorInPanel = FBAUtils::ScreenSpaceToPanelCoord(GraphPanel, FSlateApplication::Get().GetCursorPos());
 
 	TArray<UEdGraphNode*> CommentNodes;
 	TArray<UEdGraphNode*> RegularNodes;
 	for (UEdGraphNode* Node : Graph->Nodes)
 	{
+		if (!Node)
+		{
+			continue;
+		}
+
 		if (Node->IsA(UEdGraphNode_Comment::StaticClass()))
 		{
 			CommentNodes.Add(Node);
@@ -2614,17 +2680,44 @@ bool FBAUtils::IsUserInputWidget(TSharedPtr<SWidget> Widget)
 
 bool FBAUtils::IsClickableWidget(TSharedPtr<SWidget> Widget)
 {
-	const FString Type = Widget->GetTypeAsString();
-	if (Type == "SComboBox" ||
-		Type == "SComponentClassCombo" ||
-		Type == "SCheckBox" ||
-		Type == "SColorBlock")
+	if (!Widget.IsValid())
+	{
+		return false;
+	}
+
+	if (IsComboWidget(Widget))
 	{
 		return true;
 	}
 
-	const bool Contains = Type.Contains("Button");
-	return Contains;
+	const static TSet<FName> Types = { "SCheckBox", "SColorBlock" };
+	if (IsWidgetOfAnyType(Widget, Types))
+	{
+		return true;
+	}
+
+	return Widget->GetTypeAsString().Contains("Button");
+}
+
+bool FBAUtils::IsComboWidget(TSharedPtr<SWidget> Widget)
+{
+	if (!Widget.IsValid())
+	{
+		return false;
+	}
+
+	const static TSet<FName> ComboTypes = {
+		"SComboBox", "SComboButton", "SComponentClassCombo", "SPropertyComboBox", "STextComboBox",
+		"SSearchableComboBox", "SIpAddressComboBox", "SNameComboBox", "SStateTreeEditorColorComboBox",
+		"SComboPanelIconTile", "SComboRow", "SDataTableStructComboBox" "SEnumComboBox",
+	};
+
+	if (IsWidgetOfAnyType(Widget, ComboTypes))
+	{
+		return true;
+	}
+
+	return false;
 }
 
 FVector2D FBAUtils::GraphCoordToPanelCoord(
@@ -2839,7 +2932,7 @@ void FBAUtils::InteractWithWidget(TSharedPtr<SWidget> Widget)
 	if (FBAUtils::IsClickableWidget(Widget))
 	{
 		// Combo buttons should be clicked not keyboard pressed, e.g. SelectObject in Construct Object or AddComponent btn to actor
-		const bool bComboButton = FBAUtils::IsWidgetOfType(Widget, "SComboButton") || FBAUtils::IsWidgetOfType(Widget, "SComponentClassCombo");
+		const bool bComboButton = FBAUtils::IsComboWidget(Widget);
 		if (bComboButton)
 		{
 			TSharedPtr<SWidget> ChildButton = GetChildWidget(Widget, "SButton");
@@ -3104,6 +3197,93 @@ UEdGraphNode* FBAUtils::GetTopMostWithFilter(
 	return Local.Recursive_TopMost(RootInfo, nullptr, Direction, Pred).Node;
 }
 
+UEdGraphNode* FBAUtils::GetTopMostWithFilter(UEdGraphNode* Node, EEdGraphPinDirection Direction, TFunctionRef<bool(const FPinLink&)> Pred)
+{
+		struct FLocalInfo
+	{
+		UEdGraphNode* Node;
+		int Top;
+		int Right;
+
+		FLocalInfo(UEdGraphNode* InNode, const int InTop, const int InRight)
+			: Node(InNode)
+			, Top(InTop)
+			, Right(InRight) { }
+	};
+
+	struct FLocal
+	{
+		TArray<UEdGraphNode*> VisitedNodes;
+
+		FLocalInfo Recursive_TopMost(
+			FLocalInfo& Info,
+			UEdGraphPin* InPin,
+			const EEdGraphPinDirection InDirection,
+			TFunctionRef<bool (const FPinLink&)> Pred)
+		{
+			TArray<EEdGraphPinDirection> InputOutput
+				= InDirection == EGPD_Output
+				? TArray<EEdGraphPinDirection>{ EGPD_Input, EGPD_Output }
+				: TArray<EEdGraphPinDirection>{ EGPD_Output, EGPD_Input };
+
+			const int32 PinIndex = InPin == nullptr
+				? 0
+				: FBAUtils::GetLinkedPins(Info.Node, InPin->Direction).IndexOfByKey(InPin);
+
+			Info.Top -= PinIndex;
+
+			TArray<FLocalInfo> Children;
+			for (EEdGraphPinDirection Direction : InputOutput)
+			{
+				const int NewRight = Info.Right + (Direction == InDirection ? 1 : -1);
+				int ChildIndexOffset = 0;
+
+				for (FPinLink& PinLink : FBAUtils::GetPinLinks(Info.Node, Direction))
+				{
+					UEdGraphPin* LinkedPin = PinLink.GetToPinUnsafe();
+					if (!Pred(PinLink))
+					{
+						continue;
+					}
+
+					const int NewTop = Info.Top + ChildIndexOffset;
+
+					ChildIndexOffset += 1;
+
+					UEdGraphNode* LinkedNode = LinkedPin->GetOwningNode();
+					if (VisitedNodes.Contains(LinkedNode))
+					{
+						continue;
+					}
+
+					VisitedNodes.Add(LinkedNode);
+
+					FLocalInfo LinkedInfo(LinkedNode, NewTop, NewRight);
+					Children.Add(Recursive_TopMost(LinkedInfo, LinkedPin, InDirection, Pred));
+				}
+			}
+			Children.Add(Info);
+
+			const auto& TopRightMost = [](const FLocalInfo& A, const FLocalInfo& B)
+			{
+				if (A.Top != B.Top)
+				{
+					return A.Top < B.Top;
+				}
+
+				return A.Right > B.Right;
+			};
+			Children.Sort(TopRightMost);
+
+			return Children[0];
+		}
+	};
+
+	FLocal Local;
+	FLocalInfo RootInfo(Node, 0, 0);
+	return Local.Recursive_TopMost(RootInfo, nullptr, Direction, Pred).Node;
+}
+
 void FBAUtils::SafeDelete(TSharedPtr<FBAGraphHandler> GraphHandler, UEdGraphNode* Node)
 {
 	if (!Node)
@@ -3318,6 +3498,11 @@ UEdGraphPin* FBAUtils::GetPinFromGraph(const FGraphPinHandle& Handle, UEdGraph* 
 
 	for (auto Node : Graph->Nodes)
 	{
+		if (!Node)
+		{
+			continue;
+		}
+
 		if (Node->NodeGuid == Handle.NodeGuid)
 		{
 			for (UEdGraphPin* Pin : Node->Pins)
@@ -3342,6 +3527,11 @@ UEdGraphNode* FBAUtils::GetNodeFromGraph(const UEdGraph* Graph, const FGuid& Nod
 
 	for (UEdGraphNode* Node : Graph->Nodes)
 	{
+		if (!Node)
+		{
+			continue;
+		}
+
 		if (Node->NodeGuid == NodeGuid)
 		{
 			return Node;
@@ -3353,17 +3543,17 @@ UEdGraphNode* FBAUtils::GetNodeFromGraph(const UEdGraph* Graph, const FGuid& Nod
 
 bool FBAUtils::IsExtraRootNode(UEdGraphNode* Node)
 {
+	if (FBAFormatterSettings* FormatterSettings = UBASettings::FindFormatterSettings(Node->GetGraph()))
+	{
+		return FormatterSettings->RootNodes.Contains(GetObjectClassName(Node));
+	}
+
 	if (FBAMetaData* MetaData = GetNodeMetaData(Node))
 	{
 		if (MetaData->HasValue(Node, FNodeMetadata::DefaultGraphNode))
 		{
 			return true;
 		}
-	}
-	
-	if (FBAFormatterSettings* FormatterSettings = UBASettings::FindFormatterSettings(Node->GetGraph()))
-	{
-		return FormatterSettings->RootNodes.Contains(GetObjectClassName(Node));
 	}
 
 	return false;
@@ -3873,20 +4063,29 @@ bool FBAUtils::IsNodeBeingRenamed(TSharedPtr<SGraphNode> GraphNode)
 			return true;
 		}
 
-		// if an editable text box has keyboard focus
-		if (TSharedPtr<SWidget> KeyboardFocusedWidget = FSlateApplication::Get().GetKeyboardFocusedWidget())
-		{
-			if (FBAUtils::IsWidgetOfTypeFast(KeyboardFocusedWidget, "SEditableText"))
-			{
-				return true;
-			}
-		}
-
 		if (GraphNode->GetNodeObj()->GetCanRenameNode())
 		{
 			if (TSharedPtr<SInlineEditableTextBlock> TitleText = FIND_CHILD_WIDGET(GraphNode, SInlineEditableTextBlock))
 			{
 				return TitleText->IsInEditMode();
+			}
+		}
+
+		// Check if any inline editable text blocks are being edited inside the action menu 
+		if (TSharedPtr<SWidget> KeyboardFocusedWidget = FSlateApplication::Get().GetKeyboardFocusedWidget())
+		{
+			if (FBAUtils::IsWidgetOfTypeFast(KeyboardFocusedWidget, "SEditableText"))
+			{
+				if (TSharedPtr<SInlineEditableTextBlock> InlineEditable = FIND_PARENT_WIDGET(KeyboardFocusedWidget, SInlineEditableTextBlock))
+				{
+					if (InlineEditable->IsInEditMode())
+					{
+						if (FIND_PARENT_WIDGET(KeyboardFocusedWidget, SGraphActionMenu))
+						{
+							return true;
+						}
+					}
+				}
 			}
 		}
 	}
@@ -4067,6 +4266,104 @@ FString FBAUtils::AttachPropertyNamesToValue(const FString& DefaultValue, const 
 	return ParsedStructValue;
 }
 
+bool FBAUtils::CanSetDefaultPinValue(UEdGraphPin* Pin, const FString& NewDefaultValue, UObject* NewDefaultObject, const FText& NewDefaultTextValue, FString* OutError)
+{
+	if (!Pin)
+	{
+		return false;
+	}
+
+	if (UMaterialGraphNode* MaterialNode = Cast<UMaterialGraphNode>(Pin->GetOwningNode()))
+	{
+		if (!CanSetDefaultMaterialPinValue(MaterialNode->MaterialExpression, Pin, NewDefaultValue))
+		{
+			return false;
+		}
+	}
+
+	return true;
+}
+
+bool FBAUtils::CanSetDefaultMaterialPinValue(UMaterialExpression* MaterialExpression, UEdGraphPin* Pin, const FString& DefaultValue)
+{
+	// So that UMaterialExpression::PinDefaultValueChanged doesn't hit asserts when trying to set default values
+	int PinIndex = Pin->SourceIndex;
+
+	TArray<FProperty*> Properties = MaterialExpression->GetInputPinProperty(PinIndex);
+	if (Properties.IsEmpty())
+	{
+		return false;
+	}
+
+	TArray<FString> PropertyValues;
+	if (Properties.Num() == 1)
+	{
+		PropertyValues.Add(DefaultValue);
+	}
+	else if (Properties.Num() == 2)
+	{
+		FVector2D Value;
+		if (!Value.InitFromString(DefaultValue))
+		{
+			return false;
+		}
+	}
+	else
+	{
+		// Vector 3/4 are formatted as numbers separated by commas
+		DefaultValue.ParseIntoArray(PropertyValues, TEXT(","), true);
+		if (PropertyValues.Num() != Properties.Num())
+		{
+			return false;
+		}
+	}
+
+	for (int32 i = 0; i < Properties.Num(); ++i)
+	{
+		const FProperty* Property = Properties[i];
+		const FString& PropertyValue = PropertyValues[i];
+		const FFieldClass* PropertyClass = Property->GetClass();
+
+		if (PropertyClass == FStructProperty::StaticClass())
+		{
+			UScriptStruct* Struct = ((FStructProperty*)Property)->Struct;
+			if (Struct == TBaseStructure<FLinearColor>::Get())
+			{
+				if (Property->HasMetaData(TEXT("HideAlphaChannel")))
+				{
+					// This is a 3 element vector
+					TArray<FString> Elements;
+					PropertyValue.ParseIntoArray(Elements, TEXT(","), true);
+					if (Elements.Num() != 3)
+					{
+						return false;
+					}
+				}
+			}
+			else if (Struct == TVariantStructure<FVector4>::Get() || Struct == TVariantStructure<FVector4d>::Get())
+			{
+				TArray<FString> Elements;
+				PropertyValue.ParseIntoArray(Elements, TEXT(","), true);
+				if (Elements.Num() != 4)
+				{
+					return false;
+				}
+			}
+			else if (Struct == TBaseStructure<FVector>::Get() || Struct == TVariantStructure<FVector3f>::Get())
+			{
+				TArray<FString> Elements;
+				PropertyValue.ParseIntoArray(Elements, TEXT(","), true);
+				if (Elements.Num() != 3)
+				{
+					return false;
+				}
+			}
+		}
+	}
+
+	return true;
+}
+
 bool FBAUtils::TrySetDefaultPinValues(UEdGraphPin* Pin, const FString& NewDefaultValue, UObject* NewDefaultObject, const FText& NewDefaultTextValue, FString* OutError)
 {
 	if (Pin)
@@ -4083,6 +4380,11 @@ bool FBAUtils::TrySetDefaultPinValues(UEdGraphPin* Pin, const FString& NewDefaul
 						{
 							return false;
 						}
+					}
+
+					if (!CanSetDefaultPinValue(Pin, NewDefaultValue, NewDefaultObject, NewDefaultTextValue))
+					{
+						return false;
 					}
 
 					const auto& PC = Pin->PinType.PinCategory;
@@ -4128,6 +4430,12 @@ bool FBAUtils::TrySetDefaultPinValuesFromString(UEdGraphPin* Pin, const FString&
 	const auto& PC = Pin->PinType.PinCategory;
 	if (IsObjectPinType(PC))
 	{
+		// Avoid hitting assert if you try to load object from a very long string
+		if (NewDefault.Len() >= NAME_SIZE)
+		{
+			return false;
+		}
+
 		NewDefaultObject = NewDefault.IsEmpty() ? nullptr : LoadObject<UObject>(nullptr, *NewDefault, nullptr, 0, nullptr);
 	}
 	else if (PC == UEdGraphSchema_K2::PC_Text)
@@ -4311,13 +4619,29 @@ bool FBAUtils::GetPinOffset(TSharedPtr<SGraphPanel> GraphPanel, UEdGraphPin* Pin
 
 TFunction<bool(UEdGraphPin&, UEdGraphPin&)> FBAUtils::GetHighestPinPredicate(TSharedPtr<SGraphPanel> GraphPanel)
 {
-	return [GraphPanel](UEdGraphPin& PinA, UEdGraphPin& PinB)
+	return [&GraphPanel](UEdGraphPin& PinA, UEdGraphPin& PinB)
 	{
 		FVector2D OffsetA(0, FLT_MAX);
 		FVector2D OffsetB(0, FLT_MAX);
 		GetPinOffset(GraphPanel, &PinA, OffsetA);
 		GetPinOffset(GraphPanel, &PinB, OffsetB);
 		return OffsetA.Y < OffsetB.Y;
+	};
+}
+
+TFunction<bool(UEdGraphPin&, UEdGraphPin&)> FBAUtils::GetHighestPinPredicate(TSharedPtr<FBAGraphHandler> GraphHandler)
+{
+	return [&GraphHandler](UEdGraphPin& PinA, UEdGraphPin& PinB)
+	{
+		return GraphHandler->GetPinY(&PinA) < GraphHandler->GetPinY(&PinB);
+	};
+}
+
+TFunction<bool(const FPinLink&, const FPinLink&)> FBAUtils::GetHighestPinLinkPredicate(TSharedPtr<FBAGraphHandler> GraphHandler)
+{
+	return [&GraphHandler](const FPinLink& PinA, const FPinLink& PinB)
+	{
+		return GraphHandler->GetPinY(PinA.From) < GraphHandler->GetPinY(PinB.From);
 	};
 }
 
@@ -4383,5 +4707,50 @@ UPackage* FBAUtils::GetPackage(UObject* Obj)
 	}
 
 	return Obj->GetPackage();
+}
+
+FBAVector2 FBAUtils::GetGraphNodePos(TSharedPtr<SGraphNode> Node)
+{
+#if BA_UE_VERSION_OR_LATER(5, 6)
+	return Node->GetPosition2f();
+#else
+	return Node->GetPosition();
+#endif
+}
+
+FBAVector2 FBAUtils::GetGraphNodeMarqueeSize(TSharedPtr<SGraphNode> Node)
+{
+#if BA_UE_VERSION_OR_LATER(5, 6)
+	return Node->GetDesiredSizeForMarquee2f();
+#else
+	return Node->GetDesiredSizeForMarquee();
+#endif
+}
+
+FBAVector2 FBAUtils::GetGraphEditorPasteLocation(TSharedPtr<SGraphEditor> Editor)
+{
+#if BA_UE_VERSION_OR_LATER(5, 6)
+	return Editor->GetPasteLocation2f();
+#else
+	return Editor->GetPasteLocation();
+#endif
+}
+
+FString FBAUtils::ExportNodesToText(const TSet<UEdGraphNode*>& Nodes)
+{
+	FString Out;
+
+	TSet<UObject*> Objs;
+	for (UEdGraphNode* Node : Nodes)
+	{
+		if (Node)
+		{
+			Node->PrepareForCopying();
+			Objs.Add(Node);
+		}
+	}
+
+	FEdGraphUtilities::ExportNodesToText(Objs, Out);
+	return Out;
 }
 

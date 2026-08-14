@@ -267,9 +267,17 @@ bool FPinLink::IsLinked(bool bDirectional)
 	return false;
 }
 
+bool FPinLink::HasBothGraphPins(TSharedPtr<SGraphPanel> GraphPanel) const
+{
+	return FBAUtils::GetGraphPinFast(GraphPanel, GetFromPinUnsafe()) && FBAUtils::GetGraphPinFast(GraphPanel, GetToPinUnsafe());
+}
+
 FFormatXInfo::FFormatXInfo(const FPinLink& InLink, TSharedPtr<FFormatXInfo> InParent)
 	: Link(InLink)
-	, Parent(InParent) {}
+	, Parent(InParent)
+	, Node(nullptr)
+{
+}
 
 UEdGraphNode* FFormatXInfo::GetNode() const
 {
@@ -532,55 +540,62 @@ void FNodeRelativeMapping::DebugRelativeMapping() const
 	}
 }
 
-TMap<UEdGraphNode*, TSet<FPinLink>> FFormatterConnectionValidator::BuildConnections(const TArray<UEdGraphNode*>& Nodes)
+TMap<FGuid, TSet<FPinLink>> FFormatterConnectionValidator::BuildConnections(const TArray<UEdGraphNode*>& Nodes)
 {
-	TMap<UEdGraphNode*, TSet<FPinLink>> ConnectionsMap;
+	TMap<FGuid, TSet<FPinLink>> ConnectionsMap;
 	for (UEdGraphNode* Node : Nodes)
 	{
 		if (!FBAUtils::IsKnotNode(Node))
 		{
-			ConnectionsMap.Add(Node, TSet<FPinLink>(FBAUtils::GetPinLinksIgnoringKnots(Node)));
+			ConnectionsMap.Add(Node->NodeGuid, TSet<FPinLink>(FBAUtils::GetPinLinksIgnoringKnots(Node)));
 		}
 	}
 
 	return ConnectionsMap;
 }
 
-bool FFormatterConnectionValidator::CheckChanged(const TArray<UEdGraphNode*>& Nodes)
+bool FFormatterConnectionValidator::CheckChanged(UEdGraph* Graph)
 {
-	TMap<UEdGraphNode*, TSet<FPinLink>> NewConnections = BuildConnections(Nodes);
-
-	TSet<UEdGraphNode*> NewNodes;
-	NewConnections.GetKeys(NewNodes);
-
-	TSet<UEdGraphNode*> OldNodes;
-	Connections.GetKeys(OldNodes);
-
+	check(Graph != nullptr);
 	bool bChanged = false;
 
-	TSet<UEdGraphNode*> DifferentNodes = NewNodes.Difference(OldNodes);
-	if (DifferentNodes.Num())
-	{
-		for (UEdGraphNode* Node : DifferentNodes)
-		{
-			UE_LOG(LogBlueprintAssist, Error, TEXT("Formatting has caused node to be removed or added: %s"), *FBAUtils::GetNodeName(Node));
-		}
+	TSet<FGuid> OldNodes;
+	Connections.GetKeys(OldNodes);
 
-		bChanged = true;
+	TArray<UEdGraphNode*> ValidNodes;
+	for (const FGuid& NodeGuid : OldNodes)
+	{
+		if (UEdGraphNode* Node = FBAUtils::GetNodeFromGraph(Graph, NodeGuid))
+		{
+			ValidNodes.Add(Node);
+		}
+		else
+		{
+			UE_LOG(LogBlueprintAssist, Error, TEXT("Formatting has caused node to be removed from graph %s"), *NodeGuid.ToString());
+			bChanged = true;
+		}
 	}
 
-	// check connections
-	for (auto& Node : OldNodes)
-	{
-		TSet<FPinLink>& OldLinks = Connections[Node];
-		TSet<FPinLink>& NewLinks = NewConnections[Node];
+	TMap<FGuid, TSet<FPinLink>> NewConnections = BuildConnections(ValidNodes);
 
-		TSet<FPinLink> DifferentLinks = OldLinks.Difference(NewLinks);
-		if (DifferentLinks.Num())
+	// check connections
+	for (UEdGraphNode* ValidNode : ValidNodes)
+	{
+		const FGuid& NodeGuid = ValidNode->NodeGuid;
+
+		TSet<FPinLink> OldLinks = Connections.FindRef(NodeGuid);
+		TSet<FPinLink> NewLinks = NewConnections.FindRef(NodeGuid);
+
+		if (OldLinks.Num() != NewLinks.Num() || OldLinks.Difference(NewLinks).Num() > 0)
 		{
 			for (FPinLink& Difference : OldLinks.Difference(NewLinks))
 			{
-				UE_LOG(LogBlueprintAssist, Error, TEXT("Formatting has caused node connections to change %s"), *Difference.ToString());
+				UE_LOG(LogBlueprintAssist, Error, TEXT("Formatting has disconnected node connection %s"), *Difference.ToString());
+			}
+
+			for (FPinLink& Difference : NewLinks.Difference(OldLinks))
+			{
+				UE_LOG(LogBlueprintAssist, Error, TEXT("Formatting has added node connection %s"), *Difference.ToString());
 			}
 
 			bChanged = true;

@@ -27,6 +27,7 @@ struct FBASettingsChange
 
 	static FText GetJsonPropertyDisplayName(const FString& PropName, UObject* Object);
 	static FString GetJsonValueAsString(const FString& Name, TSharedPtr<FJsonValue> Value, bool bPrettyPrint = false);
+	FString AsString(const FString& Name, TSharedPtr<FJsonValue> Value, bool bPrettyPrint = false);
 
 	bool ResetToDefault(UObject* Object);
 
@@ -43,5 +44,6 @@ public:
 
 	void SaveSettingsDefaults();
 	TArray<FBASettingsChange> GetChanges() const;
+	FString GetAllChangesAsString() const;
 	void ResetToDefault();
 };

@@ -57,6 +57,11 @@ FString FBASettingsChange::GetJsonValueAsString(const FString& Name, TSharedPtr<
 	return OutText;
 }
 
+FString FBASettingsChange::AsString(const FString& Name, TSharedPtr<FJsonValue> Value, bool bPrettyPrint)
+{
+	return FBASettingsChange::GetJsonValueAsString(PropertyName, NewValue);
+}
+
 bool FBASettingsChange::ResetToDefault(UObject* Object)
 {
 	if (FProperty* Prop = Object->GetClass()->FindPropertyByName(FName(PropertyName)))
@@ -108,6 +113,36 @@ TArray<FBASettingsChange> UBASettingsBase::GetChanges() const
 	TSharedRef<FJsonObject> Curr = MakeShareable(new FJsonObject);
 	FJsonObjectConverter::UStructToJsonObject(GetClass(), this, Curr);
 
+	if (DefaultsAsJson)
+	{
+		// iter our current properties
+		for (auto& Elem : Curr->Values)
+		{
+			// find the saved property from our json
+			if (TSharedPtr<FJsonValue> DefaultValue = DefaultsAsJson->Values.FindRef(Elem.Key))
+			{
+				const FJsonValue& Default = DefaultValue.ToSharedRef().Get();
+				const FJsonValue& New = Elem.Value.ToSharedRef().Get();
+				if (Default != New)
+				{
+					Changes.Add(FBASettingsChange(FString(Elem.Key), DefaultValue, Elem.Value));
+					// UE_LOG(LogTemp, Warning, TEXT("%s changed old %s, new %s"), *Elem.Key, *Elem.Value.Get()->AsString(), *Value->Get()->AsString());
+				}
+			}
+		}
+	}
+
+	return Changes;
+}
+
+FString UBASettingsBase::GetAllChangesAsString() const
+{
+	FString Changes;
+
+	// load our current state into json to compare with the saved json
+	TSharedRef<FJsonObject> Curr = MakeShareable(new FJsonObject);
+	FJsonObjectConverter::UStructToJsonObject(GetClass(), this, Curr);
+
 	// iter our current properties
 	for (auto& Elem : Curr->Values)
 	{
@@ -118,8 +153,9 @@ TArray<FBASettingsChange> UBASettingsBase::GetChanges() const
 			const FJsonValue& New = Elem.Value.ToSharedRef().Get();
 			if (Default != New)
 			{
-				Changes.Add(FBASettingsChange(Elem.Key, DefaultValue, Elem.Value));
-				// UE_LOG(LogTemp, Warning, TEXT("%s changed old %s, new %s"), *Elem.Key, *Elem.Value.Get()->AsString(), *Value->Get()->AsString());
+				FString Value = FBASettingsChange::GetJsonValueAsString(FString(Elem.Key), Elem.Value);
+				FString Line = FString::Printf(TEXT("%s: \"%s\""), *Elem.Key, *Value);
+				Changes.Append(Line).Append(LINE_TERMINATOR);
 			}
 		}
 	}

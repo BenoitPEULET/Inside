@@ -790,7 +790,7 @@ void FBANodeActions::OnGetContextMenuActions(const bool bUsePin)
 
 	TSharedPtr<SGraphEditor> GraphEditor = GraphHandler->GetGraphEditor();
 	const FVector2D MenuLocation = FSlateApplication::Get().GetCursorPos();
-	const FVector2D SpawnLocation = GraphEditor->GetPasteLocation();
+	const FBAVector2 SpawnLocation = FBAUtils::GetGraphEditorPasteLocation(GraphEditor);
 
 	UEdGraphNode* Node = GraphHandler->GetSelectedNode();
 
@@ -1084,6 +1084,11 @@ void FBANodeActions::LinkNodesBetweenWires()
 
 	FPinLink HoveredWire = FBAUtils::GetHoveredPinLink(GraphHandler->GetGraphPanel());
 	UEdGraphPin* PinForHoveredWire = HoveredWire.From;
+	if (!PinForHoveredWire)
+	{
+		PinForHoveredWire = FBAUtils::GetHoveredPin(GraphHandler->GetGraphPanel());
+	}
+
 	if (!PinForHoveredWire)
 	{
 		return;

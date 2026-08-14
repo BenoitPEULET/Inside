@@ -34,9 +34,15 @@ class BLUEPRINTASSIST_API SBAWelcomeScreen : public SCompoundWidget
 	TSharedRef<SWidget> MakeCustomizePage();
 
 	TSharedRef<SWidget> MakePropertiesList(const TMap<UObject*, TArray<FName>>& Properties);
+	TSharedRef<SWidget> MakeProperty(UObject* Obj, FName PropName);
 
 	FBASettingsPropertyHook SettingsPropertyHook;
 
 	TArray<TSharedPtr<SCheckBox>> MenuEntries;
 	TSharedPtr<SWidgetSwitcher> WidgetSwitcher;
+
+	static FReply OnSaveCustomSettingsClicked();
+	static FReply OnLoadCustomSettingsClicked();
+
+	static bool IsSaveCustomSettingsEnabled();
 };

@@ -17,6 +17,7 @@
 #include "IContentBrowserSingleton.h"
 #include "K2Node_DynamicCast.h"
 #include "SGraphPanel.h"
+#include "BlueprintAssistMisc/BAMiscUtils.h"
 #include "BlueprintAssistObjects/BARootObject.h"
 #include "Editor/ContentBrowser/Private/SContentBrowser.h"
 #include "Framework/Application/SlateApplication.h"
@@ -128,11 +129,6 @@ bool FBAInputProcessor::HandleKeyDownEvent(FSlateApplication& SlateApp, const FK
 	}
 
 	if (ProcessFolderBookmarkInput())
-	{
-		return true;
-	}
-
-	if (ProcessContentBrowserInput())
 	{
 		return true;
 	}
@@ -311,7 +307,7 @@ bool FBAInputProcessor::HandleKeyDownEvent(FSlateApplication& SlateApp, const FK
 		}
 
 		// process commands for which require a node to be selected
-		if (GraphHandler->GetSelectedPin() != nullptr || FBAUtils::GetHoveredGraphPin(GraphHandler->GetGraphPanel()).IsValid())
+		if (GraphHandler->GetSelectedPin() != nullptr || FBAUtils::GetHoveredGraphPin(GraphHandler->GetGraphPanel()).IsValid() || FBAUtils::GetHoveredPinLink(GraphHandler->GetGraphPanel()).HasBothPins())
 		{
 			if (ProcessCommandBindings(PinActions.PinCommands, InKeyEvent))
 			{
@@ -538,6 +534,12 @@ bool FBAInputProcessor::BeginGroupMovement(const FKey& Key)
 		return false;
 	}
 
+	if (GIsTransacting) // when does this occur?!
+	{
+		UE_LOG(LogTemp, Warning, TEXT("%hs - Failed to start group movement due to editor transacting"), __FUNCTION__);
+		return false;
+	}
+
 	// UE_LOG(LogTemp, Warning, TEXT("Hovered node %s"), *HoveredNode->ToString());
 
 	static const TSet<FName> BlockingWidgets = { "SButton", "SCheckBox" };
@@ -555,25 +557,29 @@ bool FBAInputProcessor::BeginGroupMovement(const FKey& Key)
 			return false;
 		}
 
-		TSharedPtr<SGraphPin> HoveredPin = FBAUtils::GetHoveredGraphPin(GraphPanel);
-		if (!HoveredPin && !FBAUtils::ContainsWidgetInFront(HoveredNode, BlockingWidgets))
+		const FBAVector2 MousePositionInNode = HoveredNode->GetCachedGeometry().AbsoluteToLocal(FSlateApplication::Get().GetCursorPos());
+		if (HoveredNode->CanBeSelected(MousePositionInNode))
 		{
-			UEdGraphNode* HoveredNodeObj = HoveredNode->GetNodeObj();
-
-			// our lmb hook goes before the editor's selection, so the hovered node will be selected this tick
-			if (SelectedNodes.Num() == 0)
+			TSharedPtr<SGraphPin> HoveredPin = FBAUtils::GetHoveredGraphPin(GraphPanel);
+			if (!HoveredPin && !FBAUtils::ContainsWidgetInFront(HoveredNode, BlockingWidgets))
 			{
-				SelectedNodes.Add(HoveredNodeObj);
+				UEdGraphNode* HoveredNodeObj = HoveredNode->GetNodeObj();
+
+				// our lmb hook goes before the editor's selection, so the hovered node will be selected this tick
+				if (SelectedNodes.Num() == 0)
+				{
+					SelectedNodes.Add(HoveredNodeObj);
+				}
+
+				TSet<UEdGraphNode*> NodesToMove;
+				NodesToMove.Append(SelectedNodes);
+				NodesToMove.Append(GraphHandler->GetGroupedNodes(SelectedNodes));
+
+				// set the anchor node for group movement
+				AnchorNode = HoveredNodeObj;
+				LastAnchorPos = FVector2D(FBAUtils::GetGraphNodePos(HoveredNode));
+				DragNodeTransaction.Begin(NodesToMove, INVTEXT("Move Node(s)"), EBADragMethod::LMB);
 			}
-
-			TSet<UEdGraphNode*> NodesToMove;
-			NodesToMove.Append(SelectedNodes);
-			NodesToMove.Append(GraphHandler->GetGroupedNodes(SelectedNodes));
-
-			// set the anchor node for group movement
-			AnchorNode = HoveredNodeObj;
-			LastAnchorPos = HoveredNode->GetPosition();
-			DragNodeTransaction.Begin(NodesToMove, INVTEXT("Move Node(s)"), EBADragMethod::LMB);
 		}
 	}
 	// Select the node when pressing additional node drag chord
@@ -587,26 +593,30 @@ bool FBAInputProcessor::BeginGroupMovement(const FKey& Key)
 			return false;
 		}
 
-		if (!FBAUtils::ContainsWidgetInFront(HoveredNode, BlockingWidgets))
+		const FBAVector2 MousePositionInNode = HoveredNode->GetCachedGeometry().AbsoluteToLocal(FSlateApplication::Get().GetCursorPos());
+		if (HoveredNode->CanBeSelected(MousePositionInNode))
 		{
-			UEdGraphNode* HoveredNodeObj = HoveredNode->GetNodeObj();
-
-			// also set the anchor node for group movement
-			AnchorNode = HoveredNodeObj;
-			LastAnchorPos = HoveredNode->GetPosition();
-
-			if (!SelectedNodes.Contains(HoveredNodeObj))
+			if (!FBAUtils::ContainsWidgetInFront(HoveredNode, BlockingWidgets))
 			{
-				GraphHandler->SelectNode(HoveredNodeObj);
-				bBlocking = true;
+				UEdGraphNode* HoveredNodeObj = HoveredNode->GetNodeObj();
+
+				// also set the anchor node for group movement
+				AnchorNode = HoveredNodeObj;
+				LastAnchorPos = FVector2D(FBAUtils::GetGraphNodePos(HoveredNode));
+
+				if (!SelectedNodes.Contains(HoveredNodeObj))
+				{
+					GraphHandler->SelectNode(HoveredNodeObj);
+					bBlocking = true;
+				}
+
+				TSet<UEdGraphNode*> NodeSet;
+				NodeSet.Append(GraphHandler->GetSelectedNodes(true));
+				NodeSet.Append(GraphHandler->GetGroupedNodes(GraphHandler->GetSelectedNodes()));
+
+				// begin transaction
+				DragNodeTransaction.Begin(NodeSet, INVTEXT("Move Node(s)"), EBADragMethod::AdditionalDragChord);
 			}
-
-			TSet<UEdGraphNode*> NodeSet;
-			NodeSet.Append(GraphHandler->GetSelectedNodes(true));
-			NodeSet.Append(GraphHandler->GetGroupedNodes(GraphHandler->GetSelectedNodes()));
-
-			// begin transaction
-			DragNodeTransaction.Begin(NodeSet, INVTEXT("Move Node(s)"), EBADragMethod::AdditionalDragChord);
 		}
 	}
 
@@ -678,10 +688,14 @@ bool FBAInputProcessor::OnKeyOrMouseUp(FSlateApplication& SlateApp, const FKey& 
 	{
 		if (DragNodeTransaction.DragMethod == EBADragMethod::LMB)
 		{
-			GEditor->GetTimerManager()->SetTimerForNextTick([&]()
+			TWeakPtr<FBAInputProcessor> ThisWeak = SharedThis(this);
+			GEditor->GetTimerManager()->SetTimerForNextTick([ThisWeak]()
 			{
-				DragNodeTransaction.End(EBADragMethod::LMB);
-				AnchorNode = nullptr;
+				if (TSharedPtr<FBAInputProcessor> This = ThisWeak.Pin())
+				{
+					This->DragNodeTransaction.End(EBADragMethod::LMB);
+					This->AnchorNode = nullptr;
+				}
 			});
 		}
 	}
@@ -692,10 +706,14 @@ bool FBAInputProcessor::OnKeyOrMouseUp(FSlateApplication& SlateApp, const FKey& 
 		{
 			bBlocking = true;
 			AnchorNode = nullptr;
-	
-			GEditor->GetTimerManager()->SetTimerForNextTick([&]()
+
+			TWeakPtr<FBAInputProcessor> ThisWeak = SharedThis(this);
+			GEditor->GetTimerManager()->SetTimerForNextTick([ThisWeak]()
 			{
-				DragNodeTransaction.End(EBADragMethod::AdditionalDragChord);
+				if (TSharedPtr<FBAInputProcessor> This = ThisWeak.Pin())
+				{
+					This->DragNodeTransaction.End(EBADragMethod::AdditionalDragChord);
+				}
 			});
 		}
 	}
@@ -806,7 +824,7 @@ void FBAInputProcessor::UpdateGroupMovement()
 		{
 			auto RelevantTree = FBAUtils::GetNodeTreeWithFilter(SelectedNode, [](UEdGraphPin* Pin)
 			{
-				return !FBAUtils::IsDelegatePin(Pin);
+				return !FBAUtils::IsDelegatePinLinkedToCustomEvent(Pin);
 			}, Direction);
 			NodesToMove.Append(RelevantTree);
 		}
@@ -838,7 +856,7 @@ void FBAInputProcessor::UpdateGroupMovement()
 	{
 		NodesToMove = GraphHandler->GetGroupedNodes(SelectedNodes);
 	}
-	
+
 	// Move nodes
 	GroupMoveNodes(Delta, NodesToMove);
 }
@@ -974,20 +992,25 @@ bool FBAInputProcessor::ProcessFolderBookmarkInput()
 		{
 			if (FIND_PARENT_WIDGET(FSlateApplication::Get().GetUserFocusedWidget(0), SContentBrowser))
 			{
-				FContentBrowserModule& ContentBrowserModule = FModuleManager::Get().LoadModuleChecked<FContentBrowserModule>("ContentBrowser");
-				IContentBrowserSingleton& ContentBrowser = ContentBrowserModule.Get();
-
+				IContentBrowserSingleton& ContentBrowser = IContentBrowserSingleton::Get();
+				if (ContentBrowser.GetCurrentPath().HasInternalPath())
+				{
 #if BA_UE_VERSION_OR_LATER(5, 0)
-				const FString FolderPath = ContentBrowser.GetCurrentPath().GetInternalPathString();
+					const FString FolderPath = ContentBrowser.GetCurrentPath().GetInternalPathString();
 #else
-				const FString FolderPath = ContentBrowser.GetCurrentPath();
+					const FString FolderPath = ContentBrowser.GetCurrentPath();
 #endif
-				FBACache::Get().SetBookmarkedFolder(FolderPath, i);
+					FBACache::Get().SetBookmarkedFolder(FolderPath, i);
 
-				FNotificationInfo Notification(FText::FromString(FString::Printf(TEXT("Saved bookmark %s to %s"), *BookmarkKey.ToString().ToUpper(), *FolderPath)));
-				Notification.ExpireDuration = 3.0f;
-				FSlateNotificationManager::Get().AddNotification(Notification);
-				break;
+					const FText Msg = FText::FromString(FString::Printf(TEXT("Saved bookmark %s to %s"), *BookmarkKey.ToString().ToUpper(), *FolderPath));
+					FBAMiscUtils::ShowSimpleSlateNotification(Msg, SNotificationItem::CS_Success);
+					return true;
+				}
+				else
+				{
+					FBAMiscUtils::ShowSimpleSlateNotification(INVTEXT("Unable to bookmark this path"), SNotificationItem::CS_Fail);
+					return false;
+				}
 			}
 		}
 
@@ -995,8 +1018,7 @@ bool FBAInputProcessor::ProcessFolderBookmarkInput()
 		{
 			if (FIND_PARENT_WIDGET(FSlateApplication::Get().GetUserFocusedWidget(0), SContentBrowser))
 			{
-				FContentBrowserModule& ContentBrowserModule = FModuleManager::Get().LoadModuleChecked<FContentBrowserModule>("ContentBrowser");
-				IContentBrowserSingleton& ContentBrowser = ContentBrowserModule.Get();
+				IContentBrowserSingleton& ContentBrowser = IContentBrowserSingleton::Get();
 
 				if (TOptional<FString> FolderPath = FBACache::Get().FindBookmarkedFolder(i))
 				{
@@ -1005,85 +1027,6 @@ bool FBAInputProcessor::ProcessFolderBookmarkInput()
 						ContentBrowser.SetSelectedPaths({ FolderPath.GetValue() });
 					}
 				}
-				break;
-			}
-		}
-	}
-
-	return false;
-}
-
-
-// TODO move these into FBACommands
-bool FBAInputProcessor::ProcessContentBrowserInput()
-{
-	if (TSharedPtr<SContentBrowser> ContentBrowserWidget = FIND_PARENT_WIDGET(FSlateApplication::Get().GetUserFocusedWidget(0), SContentBrowser))
-	{
-		FContentBrowserModule& ContentBrowserModule = FModuleManager::Get().LoadModuleChecked<FContentBrowserModule>("ContentBrowser");
-		IContentBrowserSingleton& ContentBrowser = ContentBrowserModule.Get();
-
-		// copy
-		if (IsInputChordDown(FInputChord(EModifierKey::Control, EKeys::C)))
-		{
-			CutAssets.Reset();
-			return false;
-		}
-
-		// cut
-		if (IsInputChordDown(FInputChord(EModifierKey::Control, EKeys::X)))
-		{
-			TArray<FAssetData> SelectedAssets;
-			ContentBrowser.GetSelectedAssets(SelectedAssets);
-
-			CutAssets.Reset();
-			for (FAssetData& SelectedAsset : SelectedAssets)
-			{
-				CutAssets.Add(SelectedAsset);
-			}
-
-			return CutAssets.Num() > 0;
-		}
-
-		// paste
-		if (IsInputChordDown(FInputChord(EModifierKey::Control, EKeys::V)))
-		{
-			if (CutAssets.Num())
-			{
-#if BA_UE_VERSION_OR_LATER(5, 0)
-				const FContentBrowserItemPath BrowserPath = ContentBrowser.GetCurrentPath();
-				const FString Path = BrowserPath.HasInternalPath() ? ContentBrowser.GetCurrentPath().GetInternalPathString() : FString();
-#else
-				const FString Path = ContentBrowser.GetCurrentPath();
-#endif
-
-				TArray<UObject*> AssetsToMove;
-				for (const FAssetData& AssetData : CutAssets)
-				{
-					const bool bSameFolder = Path.Equals(AssetData.PackagePath.ToString());
-					if (!bSameFolder)
-					{
-						if (UObject* Asset = AssetData.GetAsset())
-						{
-							AssetsToMove.Add(Asset);
-						}
-					}
-				}
-
-				if (!AssetsToMove.Num())
-				{
-					return false;
-				}
-
-				// TODO why do transactions not work when moving assets? (there's no undo when moving with drag / drop)
-				// const FScopedTransaction Transaction(NSLOCTEXT("UnrealEd", "CutPaste_BlueprintAssist", "Cut And Paste"));
-				// for (UObject* ToMove : AssetsToMove)
-				// {
-				// 	ToMove->Modify();
-				// }
-
-				AssetViewUtils::MoveAssets(AssetsToMove, Path);
-
-				CutAssets.Reset();
 				return true;
 			}
 		}

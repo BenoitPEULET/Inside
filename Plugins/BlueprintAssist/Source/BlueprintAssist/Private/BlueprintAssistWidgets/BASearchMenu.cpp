@@ -7,6 +7,7 @@
 
 #include "BlueprintAssistSettings_Search.h"
 #include "BlueprintAssistStyle.h"
+#include "ContentBrowserDataDragDropOp.h"
 #include "ContentBrowserDelegates.h"
 #include "ContentBrowserModule.h"
 #include "Editor.h"
@@ -15,8 +16,9 @@
 #include "IMaterialEditor.h"
 #include "ISinglePropertyView.h"
 #include "SAssetSearchBox.h"
+#include "SlateOptMacros.h"
 #include "AssetRegistry/AssetRegistryModule.h"
-#include "Editor/ContentBrowser/Private/SFilterList.h"
+#include "Editor/ContentBrowser/Private/Filters.h"
 #include "Filters/SAssetFilterBar.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Materials/Material.h"
@@ -115,13 +117,19 @@ TOptional<FString> FBASearchMenuData::GetDetails()
 	return Out;
 }
 
-void SBASearchMenuRow::Construct(const FArguments& InArgs, const TSharedRef<STableViewBase>& InOwnerTableView, TSharedPtr<FBASearchMenuData> InObject, const FText& InHighlightText)
+void SBASearchMenuRow::Construct(
+	const FArguments& InArgs,
+	const TSharedRef<STableViewBase>& InOwnerTableView,
+	TSharedPtr<class SBASearchMenu> InSearchMenu,
+	TSharedPtr<FBASearchMenuData> InObject,
+	const FText& InHighlightText)
 {
 	Object = InObject;
 	HighlightText = InHighlightText;
+	SearchMenu = InSearchMenu;
 
 	FSuperRowType::Construct(
-		FSuperRowType::FArguments(),
+		FSuperRowType::FArguments().OnDragDetected(this, &SBASearchMenuRow::HandleDrag),
 		InOwnerTableView
 	);
 }
@@ -132,50 +140,76 @@ TSharedRef<SWidget> SBASearchMenuRow::GenerateWidgetForColumn(const FName& Colum
 
 	if (ColumnName == NAME_BASearchName)
 	{
-		// FAssetToolsModule& AssetToolsModule = FModuleManager::GetModuleChecked<FAssetToolsModule>("AssetTools");
+		TSharedPtr<SWidget> IconWidget;
+		if (SearchMenu->MenuType == EBASearchMenuType::File && UBlueprintAssistSettings_Search::Get().bLargeThumbnail)
+		{
+			FSoftObjectPath ReferencePath(Object->GetNode()->GetObjectPath()); 
+			if (UObject* LoadedAsset = ReferencePath.TryLoad())
+			{
+				constexpr int32 ThumbnailSize = 48;
+				TSharedRef<FAssetThumbnail> Thumbnail = MakeShareable(new FAssetThumbnail(LoadedAsset, ThumbnailSize, ThumbnailSize, UThumbnailManager::Get().GetSharedThumbnailPool()));
+				FAssetThumbnailConfig ThumbnailConfig;
+				ThumbnailConfig.bAllowFadeIn = false;
+				ThumbnailConfig.bAllowHintText = false;
+				ThumbnailConfig.bAllowRealTimeOnHovered = false; // we use our own OnMouseEnter/Leave for logical asset item
+				ThumbnailConfig.bForceGenericThumbnail = false;
 
-		// TSharedPtr<SWidget> IconWidget;
-		// if (Object->ObjNode)
-		// {
-		// 	Object->PropNode->GetObjectPath();
-		// 	
-		// 	if (UClass* ObjectClass = UClass::TryFindTypeSlow<UClass>(*Object->ObjNode->object_native_class, EFindFirstObjectOptions::ExactClass))
-		// 	{
-		// 		FSlateIcon ClassIcon = FSlateIconFinder::FindIconForClass(ObjectClass);
-		// 		if (ClassIcon.IsSet())
-		// 		{
-		// 			IconWidget = SNew(SImage)
-		// 				.Image(ClassIcon.GetIcon());
-		// 		}
-		// 	}
-		// }
-		// else if (Object->ParentNode)
-		// {
-		// 	if (UClass* ObjectClass = UClass::TryFindTypeSlow<UClass>(Object->ParentNode->AssetClass, EFindFirstObjectOptions::ExactClass))
-		// 	{
-		// 		TSharedPtr<IAssetTypeActions> AssetActions = AssetToolsModule.Get().GetAssetTypeActionsForClass(ObjectClass).Pin();
-		//
-		// 		FSlateIcon ClassIcon = FSlateIconFinder::FindIconForClass(ObjectClass);
-		// 		if (ClassIcon.IsSet())
-		// 		{
-		// 			IconWidget = SNew(SImage)
-		// 				.Image(ClassIcon.GetIcon())
-		// 				.ColorAndOpacity(AssetActions.IsValid() ? AssetActions->GetTypeColor() : FColor::White);
-		// 		}
-		// 	}
-		// }
-		//
-		// if (IconWidget.IsValid())
-		// {
-		// 	HorizBox->AddSlot()
-		// 	        .VAlign(VAlign_Center)
-		// 	        .AutoWidth()
-		// 	        .Padding(0, 0, 4, 0)
-		// 	[
-		// 		IconWidget.ToSharedRef()
-		// 	];
-		// }
-		
+				TSharedRef<SOverlay> ItemContentsOverlay = SNew(SOverlay);
+				ItemContentsOverlay->AddSlot()
+				[
+					Thumbnail->MakeThumbnailWidget(ThumbnailConfig)
+				];
+
+				IconWidget = SNew(SBox)
+					.Padding(0)
+					.WidthOverride(ThumbnailSize)
+					.HeightOverride(ThumbnailSize)
+					[
+						ItemContentsOverlay
+					];
+			}
+		}
+		else
+		{
+			if (Object->ParentNode)
+			{
+				if (UClass* ObjectClass = UClass::TryFindTypeSlow<UClass>(*Object->ParentNode->AssetClass, EFindFirstObjectOptions::ExactClass))
+				{
+					FAssetToolsModule& AssetToolsModule = FModuleManager::GetModuleChecked<FAssetToolsModule>("AssetTools");
+					TSharedPtr<IAssetTypeActions> AssetActions = AssetToolsModule.Get().GetAssetTypeActionsForClass(ObjectClass).Pin();
+
+					FSlateIcon ClassIcon = FSlateIconFinder::FindIconForClass(ObjectClass);
+					if (ClassIcon.IsSet())
+					{
+						IconWidget = SNew(SImage)
+							.Image(ClassIcon.GetIcon())
+							.ColorAndOpacity(AssetActions.IsValid() ? AssetActions->GetTypeColor() : FColor::White);
+					}
+				}
+			}
+			else if (Object->ObjNode)
+			{
+				if (UClass* ObjectClass = UClass::TryFindTypeSlow<UClass>(*Object->ObjNode->object_native_class, EFindFirstObjectOptions::ExactClass))
+				{
+					FSlateIcon ClassIcon = FSlateIconFinder::FindIconForClass(ObjectClass);
+					if (ClassIcon.IsSet())
+					{
+						IconWidget = SNew(SImage).Image(ClassIcon.GetIcon());
+					}
+				}
+			}
+		}
+
+		if (IconWidget.IsValid())
+		{
+			HorizBox->AddSlot()
+				.VAlign(VAlign_Center)
+				.AutoWidth()
+				.Padding(0, 0, 4, 0)
+				[
+					IconWidget.ToSharedRef()
+				];
+		}
 
 		HorizBox->AddSlot()
 		        .Padding(4)
@@ -254,6 +288,28 @@ TSharedRef<SWidget> SBASearchMenuRow::GenerateWidgetForColumn(const FName& Colum
 	return HorizBox;
 }
 
+FReply SBASearchMenuRow::HandleDrag(const FGeometry& Geometry, const FPointerEvent& PointerEvent)
+{
+	// don't do anything on drag for prop nodes
+	if (Object->PropNode.IsValid())
+	{
+		return FReply::Unhandled();
+	}
+
+	UContentBrowserDataSubsystem* ContentBrowserDataSubsystem = IContentBrowserDataModule::Get().GetSubsystem();
+
+	FName VirtualPath;
+	ContentBrowserDataSubsystem->ConvertInternalPathToVirtual(Object->GetNode()->GetObjectPath(), VirtualPath);
+
+	FContentBrowserItem Item = ContentBrowserDataSubsystem->GetItemAtPath(VirtualPath, EContentBrowserItemTypeFilter::IncludeFiles);
+	if (Item.IsValid())
+	{
+		return FReply::Handled().BeginDragDrop(FContentBrowserDataDragDropOp::New({ Item }));
+	}
+
+	return FReply::Unhandled();
+}
+
 SBASearchMenu::~SBASearchMenu()
 {
 	// GetMutableDefault<USearchUserSettings>()->SearchInForeground--;
@@ -261,6 +317,7 @@ SBASearchMenu::~SBASearchMenu()
 	SaveColumnWidths();
 }
 
+BEGIN_SLATE_FUNCTION_BUILD_OPTIMIZATION
 void SBASearchMenu::Construct(const FArguments& InArgs, const FVector2D& WidgetSize, EBASearchMenuType InMenuType)
 {
 	SearchSpecifier = InArgs._SearchSpecifier;
@@ -419,44 +476,38 @@ void SBASearchMenu::Construct(const FArguments& InArgs, const FVector2D& WidgetS
 				.Padding(0, 0, 0, 1)
 				[
 					SNew(SHorizontalBox)
-
 					+ SHorizontalBox::Slot()
 					.AutoWidth()
-					.VAlign(VAlign_Center)
-					.Padding(8, 0)
-					[
-						SNew(SImage)
-						// .Image(FSearchStyle::Get().GetBrush("Stats"))
-						// .Image(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.StatsViewer")
-						            .Image(BA_STYLE_CLASS::Get().GetBrush("LevelEditor.Tabs.StatsViewer"))
-						            .ToolTip(
-							            SNew(SToolTip)
-							            [
-								            SNew(SVerticalBox)
-
-								            + SVerticalBox::Slot()
-								            .AutoHeight()
-								            [
-									            SNew(STextBlock)
-									            .Text(this, &SBASearchMenu::GetAdvancedStatus)
-								            ]
-							            ]
-						            )
-					]
-
-					// Asset Stats 
-					+ SHorizontalBox::Slot()
-					.FillWidth(1.f)
 					.VAlign(VAlign_Center)
 					.Padding(2, 0)
 					[
-						SNew(STextBlock)
-						.Text(this, &SBASearchMenu::GetStatusText)
+						SNew(SCheckBox)
+						// .ToolTipText(INVTEXT("Send the nodes that triggered the crash. Only for formatting related crashes."))
+						.Content()
+						[
+							SNew(STextBlock).Text(INVTEXT("Large Thumbnail"))
+						]
+						.IsEnabled_Lambda([&]()
+						{
+							return MenuType == EBASearchMenuType::File;
+						})
+						.IsChecked_Lambda([]()
+						{
+							return UBlueprintAssistSettings_Search::Get().bLargeThumbnail ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+						})
+						.OnCheckStateChanged_Lambda([&](ECheckBoxState NewState)
+						{
+							auto& BASettings = UBlueprintAssistSettings_Search::Get();
+							BASettings.bLargeThumbnail = (NewState == ECheckBoxState::Checked);
+							BASettings.PostEditChange();
+							BASettings.SaveConfig();
+							RefreshList();
+						})
 					]
-
 					// Index unindexed items
 					+ SHorizontalBox::Slot()
-					.AutoWidth()
+					.FillWidth(1.0)
+					.HAlign(HAlign_Center)
 					.VAlign(VAlign_Center)
 					[
 						SNew(SHyperlink)
@@ -464,6 +515,36 @@ void SBASearchMenu::Construct(const FArguments& InArgs, const FVector2D& WidgetS
 						.ToolTipText(LOCTEXT("AssetsNeedIndexingTooltip", "Click this to open and index the assets that are don't have any index data or their index data was found to be out of date."))
 						.Visibility(EVisibility::Visible)
 						.OnNavigate(this, &SBASearchMenu::HandleForceIndexOfAssetsMissingIndex)
+					]
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					.Padding(8, 0)
+					[
+						SNew(SImage)
+						.Image(BA_STYLE_CLASS::Get().GetBrush("LevelEditor.Tabs.StatsViewer"))
+						.ToolTip(
+							SNew(SToolTip)
+							[
+								SNew(SVerticalBox)
+
+								+ SVerticalBox::Slot()
+								.AutoHeight()
+								[
+									SNew(STextBlock)
+									.Text(this, &SBASearchMenu::GetAdvancedStatus)
+								]
+							]
+						)
+					]
+					// Asset Stats 
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					.Padding(2, 0)
+					[
+						SNew(STextBlock)
+						.Text(this, &SBASearchMenu::GetStatusText)
 					]
 				]
 			]
@@ -492,6 +573,7 @@ void SBASearchMenu::Construct(const FArguments& InArgs, const FVector2D& WidgetS
 
 	RefreshList();
 }
+END_SLATE_FUNCTION_BUILD_OPTIMIZATION
 
 FReply SBASearchMenu::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& KeyEvent)
 {
@@ -854,7 +936,7 @@ void SBASearchMenu::TryRefreshingSearch(const FText& InText)
 
 TSharedRef<ITableRow> SBASearchMenu::HandleListGenerateRow(TSharedPtr<FBASearchMenuData> ObjectPtr, const TSharedRef<STableViewBase>& OwnerTable)
 {
-	return SNew(SBASearchMenuRow, OwnerTable, ObjectPtr, SearchBox->GetText());
+	return SNew(SBASearchMenuRow, OwnerTable, SharedThis(this), ObjectPtr, SearchBox->GetText());
 }
 
 void SBASearchMenu::HandleListItemClicked(TSharedPtr<FBASearchMenuData> Item)

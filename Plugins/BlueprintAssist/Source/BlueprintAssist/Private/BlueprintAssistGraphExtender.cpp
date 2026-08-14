@@ -20,8 +20,13 @@
 #include "K2Node_VariableGet.h"
 #include "K2Node_VariableSet.h"
 #include "ScopedTransaction.h"
+#include "SourceCodeNavigation.h"
+#include "BlueprintAssistMisc/BAMiscUtils.h"
+#include "BlueprintAssistMisc/BAScopedRollbackTransaction.h"
+#include "Editor/Transactor.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Framework/Notifications/NotificationManager.h"
+#include "HAL/FileManager.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Widgets/Notifications/SNotificationList.h"
 
@@ -220,19 +225,29 @@ TSharedRef<FExtender> FBAGraphExtender::ExtendPin(const TSharedRef<FUICommandLis
 	{
 		static void AddGoToDefinition(FMenuBuilder& MenuBuilder, const UEdGraphPin* InPin)
 		{
-			FString ClassName = "Unknown";
 			TWeakObjectPtr<UObject> SubcategoryObject = InPin->PinType.PinSubCategoryObject;
 			if (SubcategoryObject.IsValid())
 			{
-				ClassName = SubcategoryObject->GetName();
-			}
+				FString ClassName = SubcategoryObject->GetName();
 
-			MenuBuilder.AddMenuEntry(
-				FText::FromString(FString::Printf(TEXT("Go To Definition (%s)"), *ClassName)),
-				FText::FromString(FString::Printf(TEXT("Navigate to the asset or cpp class (%s)"), *ClassName)),
-				FSlateIcon(),
-				FExecuteAction::CreateStatic(&FBAGraphExtender::GoToDefinition, InPin)
-			);
+				MenuBuilder.AddMenuEntry(
+					FText::FromString(FString::Printf(TEXT("Go To Definition (%s)"), *ClassName)),
+					FText::FromString(FString::Printf(TEXT("Navigate to the asset type (%s)"), *ClassName)),
+					FSlateIcon(),
+					FExecuteAction::CreateStatic(&FBAGraphExtender::GoToDefinition, InPin, false)
+				);
+
+				// open using package if it is an asset
+				if (SubcategoryObject->IsAsset())
+				{
+					MenuBuilder.AddMenuEntry(
+						FText::FromString(FString::Printf(TEXT("Browse to Definition (%s)"), *ClassName)),
+						FText::FromString(FString::Printf(TEXT("Browse the content browser to the asset type (%s)"), *ClassName)),
+						FSlateIcon(),
+						FExecuteAction::CreateStatic(&FBAGraphExtender::GoToDefinition, InPin, true)
+					);
+				}
+			}
 		}
 
 		static void AddGenerateCreateEventNode(FMenuBuilder& MenuBuilder, const UEdGraphPin* InPin)
@@ -259,15 +274,11 @@ TSharedRef<FExtender> FBAGraphExtender::ExtendPin(const TSharedRef<FUICommandLis
 	TWeakObjectPtr<UObject> SubCategoryObject = Pin->PinType.PinSubCategoryObject;
 	if (SubCategoryObject.IsValid())
 	{
-		UScriptStruct* Struct = Cast<UScriptStruct>(SubCategoryObject.Get());
-		if (!Struct) // don't know how to go to definition for structs
-		{
-			Extender->AddMenuExtension(
-				"EdGraphSchemaPinActions",
-				EExtensionHook::After,
-				CommandList,
-				FMenuExtensionDelegate::CreateStatic(&FLocal::AddGoToDefinition, Pin));
-		}
+		Extender->AddMenuExtension(
+			"EdGraphSchemaPinActions",
+			EExtensionHook::After,
+			CommandList,
+			FMenuExtensionDelegate::CreateStatic(&FLocal::AddGoToDefinition, Pin));
 	}
 
 	return Extender;
@@ -295,18 +306,20 @@ bool FBAGraphExtender::GenerateGetter(const UEdGraph* Graph, const UEdGraphNode*
 	if (FindObject<UEdGraph>(BlueprintObj, *FunctionName))
 	{
 		const FText Message = FText::FromString(FString::Printf(TEXT("Getter '%s' already exists"), *FunctionName));
-		FNotificationInfo Info(Message);
-		Info.ExpireDuration = 2.0f;
-		Info.bUseSuccessFailIcons = true;
-		Info.Image = BA_STYLE_CLASS::Get().GetBrush(TEXT("Icons.Warning"));
-		FSlateNotificationManager::Get().AddNotification(Info);
+		FBAMiscUtils::ShowSimpleSlateNotification(Message, SNotificationItem::CS_Fail);
 		return false;
 	}
 
-	const FScopedTransaction Transaction(NSLOCTEXT("UnrealEd", "GenerateGetter_BlueprintAssist", "Generate Getter"));
+	FBAScopedRollbackTransaction Transaction(INVTEXT("Generate Getter"));
 	BlueprintObj->Modify();
 
 	UEdGraph* NewGraph = FBlueprintEditorUtils::CreateNewGraph(BlueprintObj, FName(*FunctionName), UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
+	if (!NewGraph)
+	{
+		Transaction.Rollback(INVTEXT("Failed to Generate Getter: Spawning new function graph"));
+		return false;
+	}
+
 	FBlueprintEditorUtils::AddFunctionGraph<UClass>(BlueprintObj, NewGraph, true, nullptr);
 
 	UK2Node_EditablePinBase* FunctionEntryNodePtr = FBlueprintEditorUtils::GetEntryNode(NewGraph);
@@ -317,13 +330,16 @@ bool FBAGraphExtender::GenerateGetter(const UEdGraph* Graph, const UEdGraphNode*
 	UEdGraphPin* Pin = NewResultNode->CreateUserDefinedPin("ReturnValue", SourceVariableGet->GetPinAt(0)->PinType, EGPD_Input);
 
 	const UEdGraphSchema_K2* Schema = Cast<UEdGraphSchema_K2>(NewGraph->GetSchema());
-	check(Schema != nullptr);
 
 	// Create variable get
 	FVector2D SpawnPos(NewResultNode->NodePosX, 128);
 
 	UK2Node_VariableGet* NewVarGet = CreateVariableGetFromVariable(SpawnPos, NewGraph, SourceVariableGet);
-	check(NewVarGet);
+	if (!NewVarGet)
+	{
+		Transaction.Rollback(INVTEXT("Failed to Generate Getter: Spawning function get node"));
+		return false;
+	}
 
 	// Link to output
 	FBAUtils::TryCreateConnectionUnsafe(Pin, NewVarGet->GetPinAt(0), EBABreakMethod::Always);
@@ -343,8 +359,7 @@ bool FBAGraphExtender::GenerateGetter(const UEdGraph* Graph, const UEdGraphNode*
 		NewResultNode->bDisableOrphanPinSaving = bCurDisableOrphanSaving;
 	}
 
-	const UEdGraphSchema_K2* K2Schema = GetDefault<UEdGraphSchema_K2>();
-	K2Schema->HandleParameterDefaultValueChanged(NewResultNode);
+	Schema->HandleParameterDefaultValueChanged(NewResultNode);
 
 	FBlueprintEditorUtils::MarkBlueprintAsModified(BlueprintObj);
 
@@ -373,18 +388,23 @@ bool FBAGraphExtender::GenerateSetter(const UEdGraph* Graph, const UEdGraphNode*
 	if (FindObject<UEdGraph>(BlueprintObj, *FunctionName))
 	{
 		const FText Message = FText::FromString(FString::Printf(TEXT("Setter '%s' already exists"), *FunctionName));
-		FNotificationInfo Info(Message);
-		Info.ExpireDuration = 2.0f;
-		Info.bUseSuccessFailIcons = true;
-		Info.Image = BA_STYLE_CLASS::Get().GetBrush(TEXT("Icons.Warning"));
-		FSlateNotificationManager::Get().AddNotification(Info);
+		FBAMiscUtils::ShowSimpleSlateNotification(Message, SNotificationItem::CS_Fail);
 		return false;
 	}
 
-	const FScopedTransaction Transaction(NSLOCTEXT("UnrealEd", "GenerateSetter_BlueprintAssist", "Generate Setter"));
+	FBAScopedRollbackTransaction Transaction(INVTEXT("Generate Setter"));
 	BlueprintObj->Modify();
 
 	UEdGraph* NewGraph = FBlueprintEditorUtils::CreateNewGraph(BlueprintObj, FName(*FunctionName), UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
+	if (!NewGraph)
+	{
+		Transaction.Rollback(INVTEXT("Failed to Generate Setter: Spawning new function graph"));
+		return false;
+	}
+
+	const UEdGraphSchema_K2* Schema = Cast<UEdGraphSchema_K2>(NewGraph->GetSchema());
+
+	// add the graph to the blueprint
 	FBlueprintEditorUtils::AddFunctionGraph<UClass>(BlueprintObj, NewGraph, true, nullptr);
 
 	UK2Node_EditablePinBase* FunctionEntryNodePtr = FBlueprintEditorUtils::GetEntryNode(NewGraph);
@@ -392,16 +412,23 @@ bool FBAGraphExtender::GenerateSetter(const UEdGraph* Graph, const UEdGraphNode*
 	UK2Node_FunctionEntry* EntryNode = Cast<UK2Node_FunctionEntry>(FunctionEntryNodePtr);
 	EntryNode->MetaData.Category = UBASettings_EditorFeatures::Get().DefaultGeneratedSettersCategory;
 
-	const UEdGraphSchema_K2* Schema = Cast<UEdGraphSchema_K2>(NewGraph->GetSchema());
-	check(Schema != nullptr);
-
 	// Create set variable node
 	const FVector2D SpawnPos(256, 16);
 
 	UK2Node_VariableSet* SetNode = CreateVariableSetFromVariable(SpawnPos, NewGraph, SourceVariableGet);
+	if (!SetNode)
+	{
+		Transaction.Rollback(INVTEXT("Failed to Generate Setter: Spawning function set node"));
+		return false;
+	}
 
 	// Create input pin getter
 	UEdGraphPin* NewInputPin = FunctionEntryNodePtr->CreateUserDefinedPin("NewValue", SourceVariableGet->GetPinAt(0)->PinType, EGPD_Output);
+	if (!NewInputPin)
+	{
+		Transaction.Rollback(INVTEXT("Failed to Generate Setter: Spawning input pin"));
+		return false;
+	}
 
 	// Link nodes
 	FBAUtils::TryCreateConnectionUnsafe(FunctionEntryNodePtr->Pins[0], FBAUtils::GetExecPins(SetNode, EGPD_Input)[0], EBABreakMethod::Always);
@@ -414,8 +441,7 @@ bool FBAGraphExtender::GenerateSetter(const UEdGraph* Graph, const UEdGraphNode*
 		FunctionEntryNodePtr->bDisableOrphanPinSaving = bCurDisableOrphanSaving;
 	}
 
-	const UEdGraphSchema_K2* K2Schema = GetDefault<UEdGraphSchema_K2>();
-	K2Schema->HandleParameterDefaultValueChanged(FunctionEntryNodePtr);
+	Schema->HandleParameterDefaultValueChanged(FunctionEntryNodePtr);
 
 	FBlueprintEditorUtils::MarkBlueprintAsModified(BlueprintObj);
 
@@ -424,29 +450,19 @@ bool FBAGraphExtender::GenerateSetter(const UEdGraph* Graph, const UEdGraphNode*
 
 void FBAGraphExtender::GenerateGetterAndSetter(const UEdGraph* Graph, const UEdGraphNode* Node)
 {
-	FScopedTransaction Transaction(NSLOCTEXT("UnrealEd", "GenerateGetterAndSetter_BlueprintAssist", "Generate Getter And Setter"));
-
-	bool bSuccess = false;
-	bSuccess |= GenerateGetter(Graph, Node);
-	bSuccess |= GenerateSetter(Graph, Node);
-
-	if (!bSuccess)
-	{
-		Transaction.Cancel();
-	}
+	GenerateGetter(Graph, Node);
+	GenerateSetter(Graph, Node);
 }
 
 void FBAGraphExtender::ConvertGetToSet(const UEdGraph* Graph, UK2Node_VariableGet* VariableGetNode)
 {
-	FScopedTransaction Transaction(NSLOCTEXT("UnrealEd", "ConvertGetToSet_BlueprintAssist", "Convert Get To Set"));
+	FScopedTransaction Transaction(INVTEXT("Convert Get To Set"));
 
 	const FBlueprintEditor* BPEditor = FBAUtils::GetBlueprintEditorForGraph(Graph);
 	if (!BPEditor)
 	{
 		return;
 	}
-
-	UEdGraph* MutGraph = VariableGetNode->GetGraph();
 
 	const UEdGraphSchema_K2* Schema = Cast<UEdGraphSchema_K2>(Graph->GetSchema());
 	if (!Schema)
@@ -457,41 +473,52 @@ void FBAGraphExtender::ConvertGetToSet(const UEdGraph* Graph, UK2Node_VariableGe
 	// Create the set node
 	auto NodePos = FVector2D(VariableGetNode->NodePosX, VariableGetNode->NodePosY);
 
+	UEdGraph* MutGraph = VariableGetNode->GetGraph();
 	UK2Node_VariableSet* SetNode = CreateVariableSetFromVariable(NodePos, MutGraph, VariableGetNode);
-
-	UEdGraphPin* OutPin = SetNode->FindPin(TEXT("Output_Get"));
-
-	// Check if the self pin exists
-	TArray<UEdGraphPin*> OriginalSelfLinkedTo;
-	if (UEdGraphPin* OriginalSelfPin = Schema->FindSelfPin(*VariableGetNode, EGPD_Input))
+	if (!SetNode)
 	{
-		OriginalSelfLinkedTo = OriginalSelfPin->LinkedTo;
+		FBAMiscUtils::ShowSimpleSlateNotification(INVTEXT("Failed to convert variable Getter to Setter"), SNotificationItem::CS_Fail);
+		return;
 	}
 
-	TArray<UEdGraphPin*> PinsToLinkTo = VariableGetNode->GetValuePin()->LinkedTo;
+	FBANodePinHandle OutPin = SetNode->FindPin(TEXT("Output_Get"));
+	if (!OutPin.IsValid())
+	{
+		FBAMiscUtils::ShowSimpleSlateNotification(INVTEXT("Failed to convert, output get invalid"), SNotificationItem::CS_Fail);
+		return;
+	}
+
+	// Check if the self pin exists
+	TArray<FBANodePinHandle> OriginalSelfLinkedTo;
+	if (UEdGraphPin* OriginalSelfPin = Schema->FindSelfPin(*VariableGetNode, EGPD_Input))
+	{
+		OriginalSelfLinkedTo = FBANodePinHandle::ConvertArray(OriginalSelfPin->LinkedTo);
+	}
+
+	TArray<FBANodePinHandle> PinsToLinkTo = FBANodePinHandle::ConvertArray(VariableGetNode->GetValuePin()->LinkedTo);
 
 	// Delete the get node
 	FBAUtils::DeleteNode(VariableGetNode);
 
 	// replace links
-	for (UEdGraphPin* LinkedPin : PinsToLinkTo)
+	for (auto& LinkedPin : PinsToLinkTo)
 	{
-		Graph->GetSchema()->TryCreateConnection(OutPin, LinkedPin);
+		Schema->TryCreateConnection(OutPin.GetPin(), LinkedPin.GetPin());
 	}
 
 	// Link self pins
 	if (UEdGraphPin* NewSelfPin = Schema->FindSelfPin(*SetNode, EGPD_Input))
 	{
-		for (UEdGraphPin* Pin : OriginalSelfLinkedTo)
+		for (auto& Pin : OriginalSelfLinkedTo)
 		{
-			Graph->GetSchema()->TryCreateConnection(NewSelfPin, Pin);
+			Schema->TryCreateConnection(NewSelfPin, Pin.GetPin());
 		}
 	}
 }
 
 void FBAGraphExtender::ConvertSetToGet(const UEdGraph* Graph, UK2Node_VariableSet* VariableSetNode)
 {
-	FScopedTransaction Transaction(NSLOCTEXT("UnrealEd", "ConvertSetToGet_BlueprintAssist", "Convert Set To Get"));
+	FScopedTransaction Transaction(INVTEXT("Convert Set To Get"));
 
 	const FBlueprintEditor* BPEditor = FBAUtils::GetBlueprintEditorForGraph(Graph);
 	if (!BPEditor)
@@ -511,16 +538,28 @@ void FBAGraphExtender::ConvertSetToGet(const UEdGraph* Graph, UK2Node_VariableSe
 	const FVector2D NodePos = FVector2D(VariableSetNode->NodePosX, VariableSetNode->NodePosY);
 
 	UK2Node_VariableGet* GetNode = CreateVariableGetFromVariable(NodePos, MutGraph, VariableSetNode);
+	if (!GetNode)
+	{
+		FBAMiscUtils::ShowSimpleSlateNotification(INVTEXT("Failed to convert variable Setter to Getter"), SNotificationItem::CS_Fail);
+		return;
+	}
 
-	UEdGraphPin* OutPin = GetNode->GetValuePin();
+	FBANodePinHandle OutPin = GetNode->GetValuePin();
 
-	TArray<UEdGraphPin*> PinsToLinkTo = VariableSetNode->FindPin(TEXT("Output_Get"))->LinkedTo;
+	UEdGraphPin* SetOut = VariableSetNode->FindPin(TEXT("Output_Get"));
+	if (!SetOut)
+	{
+		FBAMiscUtils::ShowSimpleSlateNotification(INVTEXT("Failed to convert, output get invalid"), SNotificationItem::CS_Fail);
+		return;
+	}
+
+	TArray<FBANodePinHandle> PinsToLinkTo = FBANodePinHandle::ConvertArray(SetOut->LinkedTo);
 
 	// Check if the self pin exists
-	TArray<UEdGraphPin*> OriginalSelfLinkedTo;
+	TArray<FBANodePinHandle> OriginalSelfLinkedTo;
 	if (UEdGraphPin* OriginalSelfPin = Schema->FindSelfPin(*VariableSetNode, EGPD_Input))
 	{
-		OriginalSelfLinkedTo = OriginalSelfPin->LinkedTo;
+		OriginalSelfLinkedTo = FBANodePinHandle::ConvertArray(OriginalSelfPin->LinkedTo);
 	}
 
 	// Delete the set node
@@ -529,49 +568,81 @@ void FBAGraphExtender::ConvertSetToGet(const UEdGraph* Graph, UK2Node_VariableSe
 	FBAUtils::DeleteNode(VariableSetNode);
 
 	// replace links for the get node
-	for (UEdGraphPin* LinkedPin : PinsToLinkTo)
+	for (FBANodePinHandle& LinkedPin : PinsToLinkTo)
 	{
-		Graph->GetSchema()->TryCreateConnection(OutPin, LinkedPin);
+		Schema->TryCreateConnection(OutPin.GetPin(), LinkedPin.GetPin());
 	}
 
 	// Link self pin
 	if (UEdGraphPin* NewSelfPin = Schema->FindSelfPin(*GetNode, EGPD_Input))
 	{
-		for (UEdGraphPin* Pin : OriginalSelfLinkedTo)
+		for (FBANodePinHandle& Pin : OriginalSelfLinkedTo)
 		{
-			Graph->GetSchema()->TryCreateConnection(NewSelfPin, Pin);
+			Schema->TryCreateConnection(NewSelfPin, Pin.GetPin());
 		}
 	}
 }
 
-void FBAGraphExtender::GoToDefinition(const UEdGraphPin* Pin)
+void FBAGraphExtender::GoToDefinition(const UEdGraphPin* Pin, bool bSyncBrowser)
 {
-	if (Pin)
+	if (!Pin)
 	{
-		TWeakObjectPtr<UObject> SubcategoryObject = Pin->PinType.PinSubCategoryObject;
-		if (SubcategoryObject.IsValid())
+		return;
+	}
+
+	TWeakObjectPtr<UObject> SubcategoryObject = Pin->PinType.PinSubCategoryObject;
+	if (!SubcategoryObject.IsValid())
+	{
+		return;
+	}
+
+	if (SubcategoryObject->IsAsset())
+	{
+		FAssetData AssetData(SubcategoryObject.Get(), false);
+		if (AssetData.IsValid())
 		{
-			// open using package if it is an asset
-			if (SubcategoryObject->IsAsset())
+			if (bSyncBrowser)
 			{
-				if (UPackage* Outer = Cast<UPackage>(SubcategoryObject->GetOuter()))
-				{
-					GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(Outer->GetName());
-				}
+				GEditor->SyncBrowserToObjects({AssetData});
 			}
 			else
 			{
-				// TODO: why doesn't this work?
-				// if (UScriptStruct* Struct = Cast<UScriptStruct>(SubcategoryObject.Get()))
-				// {
-				// 	FString PathName = Pin->PinType.PinSubCategoryObject->GetFullName();
-				// 	GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(PathName);
-				// }
-				// else
-				{
-					GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(SubcategoryObject.Get());
-				}
+				GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(AssetData.ToSoftObjectPath());
 			}
+		}
+		else
+		{
+			FBAMiscUtils::ShowSimpleSlateNotification(INVTEXT("Unable to find asset type definition (invalid AssetData)"), SNotificationItem::CS_Fail);
+		}
+	}
+	else // cpp class
+	{
+		if (UClass* PropertyClass = Cast<UClass>(SubcategoryObject))
+		{
+			if (FSourceCodeNavigation::CanNavigateToClass(PropertyClass))
+			{
+				FSourceCodeNavigation::NavigateToClass(PropertyClass);
+			}
+		}
+		else if (UScriptStruct* Struct = Cast<UScriptStruct>(SubcategoryObject))
+		{
+			if (FSourceCodeNavigation::CanNavigateToStruct(Struct))
+			{
+				FSourceCodeNavigation::NavigateToStruct(Struct);
+			}
+		}
+		else if (UField* MyField = Cast<UField>(SubcategoryObject)) // other (mainly UEnum)
+		{
+			FString ClassHeaderPath;
+			if (FSourceCodeNavigation::FindClassHeaderPath(MyField, ClassHeaderPath) && IFileManager::Get().FileSize(*ClassHeaderPath) != INDEX_NONE)
+			{
+				FString AbsoluteHeaderPath = IFileManager::Get().ConvertToAbsolutePathForExternalAppForRead(*ClassHeaderPath);
+				FSourceCodeNavigation::OpenSourceFile(AbsoluteHeaderPath);
+			}
+		}
+		else
+		{
+			GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(SubcategoryObject.Get());
 		}
 	}
 }
@@ -614,12 +685,14 @@ void FBAGraphExtender::GenerateCreateEventNode(const UEdGraphPin* Pin)
 
 UK2Node_VariableSet* FBAGraphExtender::CreateVariableSetFromVariable(FVector2D NodePos, UEdGraph* Graph, const UK2Node_Variable* Variable)
 {
-	const UEdGraphSchema_K2* K2Schema = GetDefault<UEdGraphSchema_K2>();
-	if (FProperty* VariableProperty = Variable->GetPropertyForVariable())
+	if (const UEdGraphSchema_K2* K2Schema = Cast<UEdGraphSchema_K2>(Graph->GetSchema()))
 	{
-		if (UStruct* Outer = VariableProperty->GetOwnerChecked<UStruct>())
+		if (FProperty* VariableProperty = Variable->GetPropertyForVariable())
 		{
-			return K2Schema->SpawnVariableSetNode(NodePos, Graph, Variable->VariableReference.GetMemberName(), Outer);
+			if (UStruct* Outer = VariableProperty->GetOwnerChecked<UStruct>())
+			{
+				return K2Schema->SpawnVariableSetNode(NodePos, Graph, Variable->VariableReference.GetMemberName(), Outer);
+			}
 		}
 	}
 
@@ -628,12 +701,14 @@ UK2Node_VariableSet* FBAGraphExtender::CreateVariableSetFromVariable(FVector2D N
 
 UK2Node_VariableGet* FBAGraphExtender::CreateVariableGetFromVariable(FVector2D NodePos, UEdGraph* Graph, const UK2Node_Variable* Variable)
 {
-	const UEdGraphSchema_K2* K2Schema = GetDefault<UEdGraphSchema_K2>();
-	if (FProperty* VariableProperty = Variable->GetPropertyForVariable())
+	if (const UEdGraphSchema_K2* K2Schema = Cast<UEdGraphSchema_K2>(Graph->GetSchema()))
 	{
-		if (UStruct* Outer = VariableProperty->GetOwnerChecked<UStruct>())
+		if (FProperty* VariableProperty = Variable->GetPropertyForVariable())
 		{
-			return K2Schema->SpawnVariableGetNode(NodePos, Graph, Variable->VariableReference.GetMemberName(), Outer);
+			if (UStruct* Outer = VariableProperty->GetOwnerChecked<UStruct>())
+			{
+				return K2Schema->SpawnVariableGetNode(NodePos, Graph, Variable->VariableReference.GetMemberName(), Outer);
+			}
 		}
 	}
 

@@ -21,8 +21,6 @@ class BLUEPRINTASSIST_API FBAGraphHandler
 	: public TSharedFromThis<FBAGraphHandler>
 {
 public:
-	FOnNodeFormatted OnNodeFormatted;
-
 	FOnPostFormatting OnPostFormatting;
 
 	FBAGraphHandler(TWeakPtr<SDockTab> InTab, TWeakPtr<SGraphEditor> InGraphEditor);
@@ -183,6 +181,10 @@ public:
 
 	const TMap<FGuid, FBAFormattingChangeData>& GetFormattingChangeData() const { return FormattingChangeDataMap; }
 
+	void SetViewLocation(const FVector2D& NewLocation, float NewZoom);
+	void GetViewLocation(FVector2D& OutLocation, float& OutZoom);
+	void GetViewLocation(FVector2D& OutLocation);
+
 private:
 	TSharedPtr<SBlueprintAssistGraphOverlay> GraphOverlay;
 	TWeakObjectPtr<UEdGraphNode> NodeToReplace = nullptr;
@@ -308,4 +310,6 @@ private:
 	void RunSavePostFormatting();
 
 	TSharedPtr<SGraphEditor> AssignNewGraphEditorFromTab();
+
+	bool IsBlueprintRootNode(UEdGraphNode* Node, bool bOnlyOutputRoots);
 };

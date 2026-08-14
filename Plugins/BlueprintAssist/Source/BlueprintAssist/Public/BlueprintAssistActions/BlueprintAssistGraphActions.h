@@ -11,6 +11,7 @@ class BLUEPRINTASSIST_API FBAGraphActionsBase : public FBATabActionsBase
 public:
 	bool HasGraph() const;
 	bool HasGraphNonReadOnly() const;
+	TSharedPtr<FBAGraphHandler> GetGraphHandlerChecked();
 };
 
 class BLUEPRINTASSIST_API FBAGraphActions final : public FBAGraphActionsBase
